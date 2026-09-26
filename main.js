@@ -14,6 +14,7 @@ function createWindow() {
     width: 900,
     height: 1100,
     title: 'Radio 2 Top 30 Hits',
+    autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
