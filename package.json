@@ -1,0 +1,15 @@
+{
+  "name": "radio2-top30",
+  "version": "1.0.0",
+  "description": "Radio 2 Top 30 Hits — Scrapen, downloaden en converteren van muziek",
+  "main": "main.js",
+  "scripts": {
+    "start": "export PATH=\"/home/serge/.local/bin:$PATH\" && electron ."
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "puppeteer-core": "^24.0.0"
+  }
+}
