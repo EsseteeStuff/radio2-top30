@@ -317,6 +317,96 @@ def sleutel(artiest: str, titel: str) -> str:
     return re.sub(r"\s+", " ", f"{artiest.casefold()} – {titel.casefold()}")
 
 
+def vergelijk_sleutel(*delen: str) -> str:
+    """Maak een naam vergelijkbaar, ongeacht hoofdletters en streepjes.
+
+    Hiermee vallen `John Terra - Is er een ander` (zoals het in de bestandsnaam
+    staat) en `John Terra` + `Is er een ander` (zoals het in de tags staat) op
+    precies dezelfde sleutel. Spaties, liggende streepjes en underscores
+    worden allemaal hetzelfde.
+    """
+    tekst = " ".join(d for d in delen if d)
+    return re.sub(r"[\s\-–—_]+", " ", tekst.casefold()).strip()
+
+
+def _tags_van(pad: Path) -> list[tuple[str, str]]:
+    """Lees artiest en titel uit de ID3-tags; lege lijst als er geen zijn."""
+    try:
+        from mutagen.id3 import ID3, ID3NoHeaderError
+    except ImportError:
+        return []
+    try:
+        tags = ID3(pad)
+    except (ID3NoHeaderError, OSError):
+        return []
+    try:
+        artiest = str(tags.get("TPE1").text[0]) if tags.get("TPE1") else ""
+        titel = str(tags.get("TIT2").text[0]) if tags.get("TIT2") else ""
+    except (AttributeError, IndexError, ValueError):
+        return []
+    return [(artiest.strip(), titel.strip())] if artiest or titel else []
+
+
+def muziek_inventaris(map_: Path | None = None, met_tags: bool = True) -> set[str]:
+    """Een lijst van alle nummers in de muziekmap, zonder de prefix.
+
+    Vergelijk met `vergelijk_sleutel()`. Neemt de bestandsnaam zonder de
+    numerieke prefix, en daar ook de ID3-tags bij: wie een bestand in een
+    muziekspeler hebt hernoemd, wordt zo toch herkend.
+    """
+    if isinstance(map_, Context):
+        map_ = map_.paden.muziek
+    namen: set[str] = set()
+    for pad in mp3_bestanden(map_ if map_ is not None else Path()):
+        stam = zonder_prefix(pad.stem)
+        if stam:
+            namen.add(vergelijk_sleutel(stam))
+        if met_tags:
+            for artiest, titel in _tags_van(pad):
+                namen.add(vergelijk_sleutel(artiest, titel))
+    return namen
+
+
+def filter_bestaande(ctx: Context, hits: list[dict],
+                    sla_over: bool = True) -> tuple[list[dict], list[dict]]:
+    """Haal de nummers eruit die al in de muziekmap staan.
+
+    Geeft (te_downloaden, overgeslagen) terug. Vergelijkt de lijst met de
+    nummers uit de muziekmap, zodat een jaar dat je al hebt niet opnieuw
+    gedownload hoeft te worden.
+    """
+    if not sla_over:
+        ctx.log("Bestaande nummers meegedownload (optie staat uit).")
+        return list(hits), []
+    bezit = muziek_inventaris(ctx.paden.muziek)
+    if not bezit:
+        return list(hits), []
+
+    ctx.check()
+    te_downloaden: list[dict] = []
+    overgeslagen: list[dict] = []
+    for hit in hits:
+        artiest = str(hit.get("artiest", ""))
+        titel = str(hit.get("titel", ""))
+        kandidaten = {vergelijk_sleutel(artiest, titel),
+                      vergelijk_sleutel(schoon(f"{artiest} - {titel}"))}
+        (overgeslagen if kandidaten & bezit else te_downloaden).append(hit)
+
+    if overgeslagen:
+        ctx.log(
+            f"{len(overgeslagen)} van de {len(hits)} nummers staan al in "
+            f"{ctx.paden.muziek} en worden overgeslagen; "
+            f"{len(te_downloaden)} moeten nog gedownload worden."
+        )
+        for hit in overgeslagen[:5]:
+            ctx.log(f"  · al aanwezig: {hit['artiest']} - {hit['titel']}")
+        if len(overgeslagen) > 5:
+            ctx.log(f"  · … nog {len(overgeslagen) - 5} andere")
+    elif hits:
+        ctx.log(f"Geen van de {len(hits)} nummers staat al in {ctx.paden.muziek}.")
+    return te_downloaden, overgeslagen
+
+
 def mp3_bestanden(map_: Path) -> list[Path]:
     if not map_.is_dir():
         return []
@@ -705,8 +795,17 @@ def _zoek_videos(ctx: Context, artiest: str, titel: str, aantal: int) -> list[st
     ]
 
 
-def download(ctx: Context, hits: list[dict]) -> list[dict]:
-    """Download elk nummer als mp4 naar de mp4-map."""
+def download(ctx: Context, hits: list[dict], sla_bestaande_over: bool = True) -> list[dict]:
+    """Download elk nummer als mp4 naar de mp4-map.
+
+    Nummer je al in de muziekmap hebt worden overgeslagen; dat scheelt het
+    downloaden van uren bij een jaar dat je al hebt.
+    """
+    hits, _ = filter_bestaande(ctx, hits, sla_over=sla_bestaande_over)
+    if not hits:
+        ctx.log("Niets te downloaden: elk nummer staat al in de muziekmap.")
+        return laad_manifest(ctx)
+
     mp4 = ctx.paden.mp4
     mp4.mkdir(parents=True, exist_ok=True)
     eerdere = {sleutel(h["artiest"], h["titel"]): h for h in laad_manifest(ctx)}
@@ -1003,7 +1102,8 @@ def _schud_zonder_twee_keer_zelfde_artiest(bestanden: list[Path]) -> list[Path]:
         return bestanden
     groepen: dict[str, list[Path]] = {}
     for pad in bestanden:
-        artiest = pad.name.split(" - ", 1)[0].casefold()
+        # De prefix er nog af, anders is elk bestand zijn eigen 'artiest'.
+        artiest = zonder_prefix(pad.stem).split(" - ", 1)[0].casefold()
         groepen.setdefault(artiest, []).append(pad)
     volgorde: list[Path] = []
     vorige: str | None = None
@@ -1083,7 +1183,7 @@ def fixprefix(ctx: Context) -> int:
 # --------------------------------------------------------------------------
 
 def voer_alles(ctx: Context, begin: int, eind: int, verwijder_mp4: bool = True,
-               hernoem: bool = True) -> None:
+               hernoem: bool = True, sla_bestaande_over: bool = True) -> None:
     """De volledige route: scrapen, downloaden, converteren, verplaatsen."""
     ctx.log("=" * 62)
     ctx.log("1/4  Hitlijsten ophalen")
@@ -1094,7 +1194,7 @@ def voer_alles(ctx: Context, begin: int, eind: int, verwijder_mp4: bool = True,
     ctx.log("=" * 62)
     ctx.log("2/4  Downloaden van YouTube")
     ctx.log("=" * 62)
-    download(ctx, hits)
+    download(ctx, hits, sla_bestaande_over=sla_bestaande_over)
 
     ctx.log("")
     ctx.log("=" * 62)

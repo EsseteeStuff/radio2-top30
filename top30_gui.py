@@ -524,7 +524,7 @@ class TaakThread(QThread):
             ctx.log(f"Gereed: {len(hits)} nummers uit de lijst.")
         elif taak == "download":
             hits = kern.laad_hits(ctx, begin, eind)
-            kern.download(ctx, hits)
+            kern.download(ctx, hits, sla_bestaande_over=self.opties["sla_over"])
         elif taak == "convert":
             kern.convert(ctx, verwijder_mp4=self.opties["verwijder_mp4"])
         elif taak == "verplaats":
@@ -536,6 +536,7 @@ class TaakThread(QThread):
                 ctx, begin, eind,
                 verwijder_mp4=self.opties["verwijder_mp4"],
                 hernoem=self.opties["hernoemen"],
+                sla_bestaande_over=self.opties["sla_over"],
             )
         else:
             raise kern.Fout(f"Onbekende taak: {taak}")
@@ -743,9 +744,17 @@ class Venster(QMainWindow):
             "zodat je een onderbroken run kunt hervatten."
         )
         self.cb_overschrijven.setChecked(False)
+        self.cb_sla_over = QCheckBox("Alleen nummers downloaden die ik nog niet heb")
+        self.cb_sla_over.setToolTip(
+            "Vergelijkt de lijst met je muziekmap en slaat over wat er al staat.\n"
+            "Voorkomt dat je een jaar opnieuw downloadt.\n"
+            "Staat standaard aan; zet het uit om een heel jaar opnieuw te halen."
+        )
+        self.cb_sla_over.setChecked(True)
         layout_opties.addWidget(self.cb_verwijder)
         layout_opties.addWidget(self.cb_hernoemen)
         layout_opties.addWidget(self.cb_overschrijven)
+        layout_opties.addWidget(self.cb_sla_over)
 
         cookie_rij = QHBoxLayout()
         cookie_rij.setSpacing(10)
@@ -1008,6 +1017,7 @@ class Venster(QMainWindow):
             "verwijder_mp4": self.cb_verwijder.isChecked(),
             "hernoemen": self.cb_hernoemen.isChecked(),
             "overschrijven": self.cb_overschrijven.isChecked(),
+            "sla_over": self.cb_sla_over.isChecked(),
         }
 
         self._voortgang_boek = VoortgangsBoek(taak)

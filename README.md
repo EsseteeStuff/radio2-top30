@@ -395,10 +395,48 @@ Vier schakelaars onder de taken.
 
 | Optie | Standaard | Wat het doet |
 | --- | --- | --- |
+| **Alleen nummers downloaden die ik nog niet heb** | aan | Vergelijkt de lijst met je muziekmap en slaat over wat er al staat. Zie onderaan deze pagina. |
 | **mp4's opruimen na converteren** | aan | De mp3 blijft, de video verdwijnt. Zet het uit als je de mp4's wilt bewaren of nog een keer wilt converteren. |
 | **Schudden en hernummeren** | aan | Bij het verplaatsen krijgt elk bestand een willekeurige nieuwe volgorde met een numerieke prefix, zodat hetzelfde nummer nooit twee keer achter elkaar staat. Zet het uit als je de bestanden in de volgorde van de hitlijst wilt houden. |
 | **Hits-lijst opnieuw scrapen** | uit | Standaard wordt een bestaand hits-bestand hergebruikt, zodat je een onderbroken run kunt hervatten. Zet het aan als je denkt dat de lijst niet klopt. |
 | **YouTube-cookies** | `chromium` | Uit welke browser yt-dlp de cookies mag lezen. Zie hieronder. |
+
+#### Alleen nieuwe nummers downloaden
+
+Het programma maakt vóór het downloaden een lijst van alles wat er al in je
+muziekmap staat, zonder de nummering:
+
+```
+00012-Albert West - Put Your Head on My Shoulder.mp3
+   └──────┬───────┘  └──────────────┬───────────────┘
+    die nummering       wordt weggestreept
+```
+
+Daarna vergelijkt het die lijst met de lijst die je wilt downloaden, en haalt
+de dubbele nummers eruit. In de console zie je hoeveel er overblijven:
+
+```
+250 van de 250 nummers staan al in /home/jouwnaam/Muziek/DeJaren70
+en worden overgeslagen; 0 moeten nog gedownload worden.
+  · al aanwezig: Freddy Breck - Uberall auf der Welt
+  · al aanwezig: The Osmonds - Crazy Horses
+  … nog 245 andere
+```
+
+Dat scheelt uren: een jaar dat je al hebt hoeft niet opnieuw van YouTube.
+
+**Waarop wordt vergeleken.** De vergelijking let niet op hoofdletters,
+spaties of de soort streepje. Dus `ABBA - Dancing Queen`, `abba  dancing
+queen` en `ABBA – Dancing Queen` zijn allemaal hetzelfde nummer.
+
+**Ook via de tags.** Naast de bestandsnaam kijkt het programma in de ID3-tags
+van elk mp3. Heb je een bestand in een muziekspeler hernoemd van
+`Thin Lizzy - Whiskey in the Jar` naar `Mijn favoriet nummer 1`, dan herkent
+het die toch, zolang de tags nog kloppen.
+
+**Let op.** Vergelijkt wordt de titel, niet het jaar of de week. Een nummer dat
+in drie verschillende jaren in de lijst stond, wordt dus één keer bewaard en
+daarna overgeslagen. Wil je dat juist niet, zet het vakje dan uit.
 
 #### YouTube-cookies
 
@@ -494,8 +532,10 @@ Wat je in de werkmap ziet ontstaan:
 Elke stap onthoudt waar hij was:
 
 * **Scrapen** schrijft het hits-bestand meteen klaar.
-* **Downloaden** noteert elk gedownload bestand in `mp4/manifest.json` en slaat
-  het bestand op onder de naam van het nummer. Bij een herstart wordt de lijst
+* **Downloaden** vergelijkt de lijst eerst met je muziekmap en slaat over wat
+  je al hebt (zie [Alleen nieuwe nummers
+  downloaden](#alleen-nieuwe-nummers-downloaden)). Daarna noteert het elk
+  gedownload bestand in `mp4/manifest.json`. Bij een herstart wordt de lijst
   opnieuw doorgenomen en alleen het ontbrekende gedownload.
 * **Converteren** slaat de mp3 op in de mp3-map en slaat het mp4-bestand over
   als dat er nog staat.
@@ -617,7 +657,11 @@ of via de launcher:
 | `--verwijder-mp4` | Mp4's opruimen na de conversie. |
 | `--nee-hernoemen` | Bij verplaatsen niet schudden en nummeren. |
 | `--overschrijven` | Het hits-bestand opnieuw scrapen. |
+| `--geen-skip` | Niets overslaan: ook de nummers downloaden die al in je muziekmap staan. |
 | `--cookies firefox` | Browser voor de cookies. |
+
+Zonder `--geen-skip` slaat de commandoregel net als het venster over wat er al
+in de muziekmap staat.
 
 ### Voorbeelden
 
@@ -636,6 +680,9 @@ of via de launcher:
 
 # Alleen de nummers gelijk maken
 ./top30 --cli fixprefix
+
+# Een heel jaar opnieuw ophalen, ook al heb je het al
+./top30 --cli download --beginjaar 1971 --eindjaar 1971 --geen-skip
 ```
 
 Laat je de jaren weg bij `scrape` of `alles`, dan vraagt het programma ze
@@ -800,7 +847,7 @@ mappen en raakt je muziek nooit aan.
 ## Zelf testen
 
 ```bash
-.venv/bin/python selftest.py             # kern + venster, 95 punten
+.venv/bin/python selftest.py             # kern + venster, 107 punten
 .venv/bin/python selftest.py --live      # ook echt één pagina ophalen
 .venv/bin/python selftest.py --scherm    # maakt scherm_donker.png / scherm_licht.png
 ```

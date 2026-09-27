@@ -66,6 +66,11 @@ def cli(args: list[str]) -> int:
     ap.add_argument("--verwijder-mp4", action="store_true", help="mp4's opruimen na conversie")
     ap.add_argument("--nee-hernoemen", action="store_true", help="niet hernoemen bij verplaatsen")
     ap.add_argument("--overschrijven", action="store_true", help="hits-bestand opnieuw scrapen")
+    ap.add_argument("--alleen-nieuwe", action="store_true",
+                    help="sla over wat al in de muziekmap staat (default)")
+    ap.add_argument("--geen-skip", dest="alleen_nieuwe", action="store_false",
+                    help="download ook de nummers die al in de muziekmap staan")
+    ap.set_defaults(alleen_nieuwe=True)
     ap.add_argument("--cookies", default=kern.COOKIE_STANDAARD,
                     choices=list(kern.COOKIE_BROWSERS),
                     help="browser waarvan yt-dlp cookies mag gebruiken")
@@ -96,7 +101,8 @@ def cli(args: list[str]) -> int:
                 print("Geef --beginjaar en --eindjaar mee: het script heeft die nodig "
                       "om hits_BEGINJAAR_ENDJAAR.txt te vinden.")
                 return 2
-            kern.download(ctx, kern.laad_hits(ctx, begin, eind))
+            kern.download(ctx, kern.laad_hits(ctx, begin, eind),
+                          sla_bestaande_over=opties.alleen_nieuwe)
         elif opties.stap == "convert":
             kern.convert(ctx, verwijder_mp4=opties.verwijder_mp4)
         elif opties.stap == "verplaats":
@@ -109,6 +115,7 @@ def cli(args: list[str]) -> int:
                 ctx, begin, eind,
                 verwijder_mp4=opties.verwijder_mp4,
                 hernoem=not opties.nee_hernoemen,
+                sla_bestaande_over=opties.alleen_nieuwe,
             )
     except kern.Fout as fout:
         print(f"\nFout: {fout}", file=sys.stderr)

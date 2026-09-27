@@ -74,6 +74,18 @@ def test_kern() -> None:
     check("minimale breedte is 2", kern.PREFIX_BREEDTE_MIN == 2)
     check("prefix strippen", kern.zonder_prefix("00012-ABBA - x.mp3") == "ABBA - x.mp3")
 
+    # Vergelijkingssleutel: hoofdletters, streepjes en spaties mogen niet uitmaken
+    check("hoofdletters maken niet uit",
+          kern.vergelijk_sleutel("ABBA", "Dancing Queen")
+          == kern.vergelijk_sleutel("abba", "dancing  queen"))
+    check("streepje-stijl maakt niet uit",
+          kern.vergelijk_sleutel("John Terra", "Is er een ander")
+          == kern.vergelijk_sleutel("john  terra", "is  er – een  ander"))
+    check("bestandsnaam en tags geven dezelfde sleutel",
+          kern.vergelijk_sleutel(kern.zonder_prefix("00001-ABBA - Dancing Queen.mp3")[:-4])
+          == kern.vergelijk_sleutel("ABBA", "Dancing Queen"),
+          kern.vergelijk_sleutel("ABBA - Dancing Queen"))
+
     # Hitlijst schrijven en teruglezen
     werk = Path(tempfile.mkdtemp(prefix="top30test-"))
     paden = kern.Paden(werk, werk / "muziek").maak()
@@ -175,6 +187,35 @@ def test_kern() -> None:
           all(artiesten[i] != artiesten[i + 1] for i in range(len(artiesten) - 1)),
           str(artiesten))
 
+    # De schudfunctie moet de prefix écht weglaten, anders ziet elk bestand er
+    # uit als een eigen artiest en wordt de regel stilzwijend genegeerd.
+    # 20 artiesten x 3 nummers: een kale random.shuffle komt hier gemiddeld op
+    # 2.0 keer dezelfde artiest na elkaar (max 9); met deze functie is het
+    # hoogstens 2, en alleen nog in de onvermijdelijke staart.
+    schudmap = Path(tempfile.mkdtemp(prefix="top30schud-"))
+    zwaar = kern.Paden(schudmap, schudmap / "muziek").maak()
+    for i in range(1, 61):
+        artiest = f"Artiest {i % 20}"
+        (zwaar.muziek / f"{i:05d}-{artiest} - Nummer {i}.mp3").write_bytes(b"x")
+    zwaar_ctx = kern.Context(paden=zwaar, log=lambda *_: None)
+    slechtste = 0
+    for _ in range(20):                        # 20 keer schudden
+        kern.nummer_hernoemen(zwaar_ctx)
+        volgorde = [kern.zonder_prefix(p.name).split(" - ")[0]
+                    for p in sorted(kern.mp3_bestanden(zwaar.muziek),
+                                    key=lambda p: int(p.name.split("-", 1)[0]))]
+        slechtste = max(
+            slechtste,
+            sum(1 for i in range(len(volgorde) - 1)
+                if volgorde[i] == volgorde[i + 1]),
+        )
+    check("schudden houdt gelijke artiesten vrijwel altijd uit elkaar, 20x",
+          slechtste <= 2, f"{slechtste} keer dezelfde artiest na elkaar")
+    check("schudden behoudt alle bestanden",
+          len(kern.mp3_bestanden(zwaar.muziek)) == 30 + 30,
+          str(len(kern.mp3_bestanden(zwaar.muziek))))
+    shutil.rmtree(schudmap, ignore_errors=True)
+
     # Prefix herstellen: alle bestanden krijgen de breedte die bij het aantal past
     kort = paden.muziek / "7-Artist - Song.mp3"
     kort.write_bytes(b"\x00" * 50)
@@ -185,6 +226,53 @@ def test_kern() -> None:
     check("fixprefix houdt de oude 5-cijferige namen over",
           not any(p.name.startswith("0000") for p in kern.mp3_bestanden(paden.muziek)),
           str(sorted(p.name for p in kern.mp3_bestanden(paden.muziek))))
+
+    # Duplicaten weghalen: de muziekmap wordt vergeleken met de downloadlijst
+    inventaris = kern.muziek_inventaris(paden.muziek)
+    check("inventaris toont de nummers zonder prefix",
+          bool(inventaris)
+          and not any(k.startswith(tuple(str(i) for i in range(10)))
+                      for k in inventaris),
+          str(sorted(inventaris)[:4]))
+    check("inventaris kent een mp3 met een losse naam op",
+          kern.vergelijk_sleutel("Queen", "Bohemian Rhapsody") in inventaris,
+          kern.vergelijk_sleutel("Queen", "Bohemian Rhapsody"))
+    check("inventaris herkent een handmatig hernoemd bestand via de tags",
+          kern.vergelijk_sleutel("ABBA", "Dancing Queen") in inventaris,
+          str(sorted(inventaris)))
+
+    # Alles wat al in de muziekmap staat moet uit de downloadlijst verdwijnen.
+    bezit_lijst = [
+        {"artiest": "Queen", "titel": "Bohemian Rhapsody", "jaar": 1975},
+        {"artiest": "ABBA", "titel": "Dancing Queen", "jaar": 1976},
+        {"artiest": "Nog Niets", "titel": "Onbekend nummer", "jaar": 1976},
+    ]
+    te_downloaden, overgeslagen = kern.filter_bestaande(ctx, bezit_lijst)
+    check("bekende nummers uit de downloadlijst gehaald",
+          len(overgeslagen) == 2, str([h["titel"] for h in overgeslagen]))
+    check("onbekende nummers blijven over",
+          [h["titel"] for h in te_downloaden] == ["Onbekend nummer"],
+          str([h["titel"] for h in te_downloaden]))
+    check("de volgorde van de downloadlijst blijft behouden",
+          [h["titel"] for h in te_downloaden]
+          == [h["titel"] for h in bezit_lijst if h not in overgeslagen])
+    check("hoofdletters in de lijst maken niet uit",
+          len(kern.filter_bestaande(ctx, [
+              {"artiest": "queen", "titel": "bohemian rhapsody", "jaar": 1975},
+          ])[1]) == 1)
+
+    # Met de optie uit moet alles blijven staan.
+    check("optie uit laat alles downloaden",
+          len(kern.filter_bestaande(ctx, bezit_lijst, sla_over=False)[1]) == 0)
+
+    # Lege muziekmap: dan wordt niets overgeslagen. Op een eigen map, zodat de
+    # muziekmap hierboven intact blijft voor de tests die nog volgen.
+    leeg_werk = Path(tempfile.mkdtemp(prefix="top30leeg-"))
+    leeg = kern.Paden(leeg_werk, leeg_werk / "muziek").maak()
+    leeg_ctx = kern.Context(paden=leeg, log=lambda *_: None)
+    check("lege muziekmap slaat niets over",
+          len(kern.filter_bestaande(leeg_ctx, bezit_lijst)[0]) == len(bezit_lijst))
+    shutil.rmtree(leeg_werk, ignore_errors=True)
 
     # Onderbreken
     ctx.stop.set()
