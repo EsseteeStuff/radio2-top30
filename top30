@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Top30 starten met één commando:  ./top30
+#
+# Dit script start het grafisch venster met de juiste Python (de virtual
+# environment als die er is), zodat je geen 'source .venv/bin/activate' nodig
+# hebt. Met --cli werkt hetzelfde script voor de commandoregel.
+set -euo pipefail
+HIER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Kies een interpreter: venv eerst, dan python3, dan python.
+if [ -x "$HIER/.venv/bin/python" ]; then
+  PY="$HIER/.venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+  PY="$(command -v python3)"
+elif command -v python >/dev/null 2>&1; then
+  PY="$(command -v python)"
+else
+  echo "Geen Python gevonden. Installeer Python 3.10 of nieuwer." >&2
+  exit 1
+fi
+
+exec "$PY" "$HIER/top30.py" "$@"

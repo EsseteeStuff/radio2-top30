@@ -1,0 +1,1132 @@
+#!/usr/bin/env python3
+"""Top30 kern: scrapen, downloaden, converteren en verplaatsen.
+
+Deze module bevat geen GUI-code en werkt zowel vanuit de GUI als vanuit de
+commandoregel. Elke stap is een functie die een :class:`Context` krijgt met
+
+* ``log(str)``      - schrijf een regel naar de console
+* ``voortgang(...)`` - meld de voortgang van de lopende stap
+* ``stop``          - een ``threading.Event``; de GUI zet dit op om te stoppen
+
+De stappen zijn hervatbaar: elk slaat zijn voortgang op (hits-bestand,
+manifest.json, bestaande mp3's) zodat je na een onderbreking gewoon opnieuw
+kunt starten en alleen het ontbrekende werk doet.
+"""
+from __future__ import annotations
+
+import json
+import os
+import queue
+import random
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, Iterable
+
+# --------------------------------------------------------------------------
+# Constanten
+# --------------------------------------------------------------------------
+
+BRON = "https://www.hitnoteringen.be/hitlijsten/vrt-radio-2-top-30/{jaar}-{week:02d}"
+EERSTEJAAR = 1970
+EERSTE_WEEK_1970 = 18
+MAX_WEEK = 53
+GENRE = "Pop"
+ALBUM = "Oldies but Goldies"
+OMSCHRIJVING = "Oldies but goldies {jaar}"
+PREFIX_BREEDTE_MIN = 2
+
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+)
+
+# Fouten van YouTube die het waard zijn om later opnieuw te proberen.
+TIJDELIJK = (
+    "the page needs to be reloaded", "request throttling", "http error 403",
+    "unable to download video data", "timed out", "connection reset",
+    "connection refused", "read timed out", "429",
+    "waiting for the stream to start", "temporarily unavailable",
+)
+# Fouten waarna je beter naar een ander video kunt zoeken.
+INLOGFOUT = (
+    "403", "sign in to confirm", "not a bot", "login required",
+    "age-restricted", "age restriction", "private video", "removed",
+)
+
+COOKIE_BROWSERS = ("geen", "chrome", "chromium", "firefox", "edge", "brave", "opera", "vivaldi")
+COOKIE_STANDAARD = "chromium"
+
+
+class Onderbroken(Exception):
+    """Gecontroleerde afbreking op verzoek van de gebruiker."""
+
+
+class Fout(Exception):
+    """Fout die de gebruiker in de GUI moet zien."""
+
+
+# --------------------------------------------------------------------------
+# Instellingen en mappen
+# --------------------------------------------------------------------------
+
+def config_map() -> Path:
+    """Map waarin settings.json staat."""
+    try:
+        from PySide6.QtCore import QStandardPaths
+
+        return Path(
+            QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.ConfigLocation
+            )
+        ) / "Top30"
+    except Exception:
+        pass
+    if sys.platform == "win32":
+        basis = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+    elif sys.platform == "darwin":
+        basis = Path.home() / "Library" / "Application Support"
+    else:
+        basis = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return basis / "Top30"
+
+
+@dataclass
+class Paden:
+    """Alle mappen die het programma gebruikt."""
+
+    werk: Path
+    muziek: Path
+
+    def __post_init__(self) -> None:
+        # Strings mag je ook meegeven; werk ze meteen om.
+        self.werk = Path(self.werk).expanduser()
+        self.muziek = Path(self.muziek).expanduser()
+
+    @property
+    def mp4(self) -> Path:
+        return self.werk / "mp4"
+
+    @property
+    def mp3(self) -> Path:
+        return self.werk / "mp3"
+
+    @property
+    def cookies(self) -> Path:
+        return self.werk / "cookies.txt"
+
+    @property
+    def manifest(self) -> Path:
+        return self.mp4 / "manifest.json"
+
+    @property
+    def foutenlog(self) -> Path:
+        return self.mp4 / "download_fouten.log"
+
+    def hits_bestand(self, begin: int, eind: int) -> Path:
+        return self.werk / f"hits_{begin}_{eind}.txt"
+
+    def maak(self) -> "Paden":
+        for pad in (self.werk, self.muziek, self.mp3, self.mp4):
+            pad.mkdir(parents=True, exist_ok=True)
+        return self
+
+
+def standaard_werkmap() -> Path:
+    return Path.home() / "temp" / "Top30"
+
+
+def standaard_muziekmap() -> Path:
+    return Path.home() / "Muziek" / "MijnMuziek"
+
+
+def laad_instellingen() -> dict:
+    pad = config_map() / "settings.json"
+    if pad.is_file():
+        try:
+            return json.loads(pad.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+    return {}
+
+
+def bewaar_instellingen(werk: Path, muziek: Path, cookie_browser: str) -> None:
+    map_ = config_map()
+    map_.mkdir(parents=True, exist_ok=True)
+    (map_ / "settings.json").write_text(
+        json.dumps(
+            {
+                "work_dir": str(werk),
+                "mp3_folder": str(Path(werk) / "mp3"),
+                "mp4_folder": str(Path(werk) / "mp4"),
+                "final_folder": str(muziek),
+                "cookie_browser": cookie_browser,
+            },
+            indent=1,
+        ),
+        encoding="utf-8",
+    )
+
+
+def paden_uit_instellingen() -> Paden:
+    instellingen = laad_instellingen()
+    werk = Path(instellingen.get("work_dir") or standaard_werkmap())
+    muziek = Path(instellingen.get("final_folder") or standaard_muziekmap())
+    return Paden(werk, muziek)
+
+
+# --------------------------------------------------------------------------
+# Context: log, voortgang en stop
+# --------------------------------------------------------------------------
+
+@dataclass
+class Context:
+    """Voert de stappen uit en meldt wat er gebeurt."""
+
+    paden: Paden
+    log: Callable[[str], None] = print
+    voortgang: Callable[[str, int, int, str], None] = lambda *_: None
+    deelvoortgang: Callable[[float, str], None] = lambda *_: None
+    stop: threading.Event = field(default_factory=threading.Event)
+    cookie_browser: str = COOKIE_STANDAARD
+    mp3_kwaliteit: int = 2
+
+    # -------------------------------------------------------------- hulpjes
+    def check(self) -> None:
+        if self.stop.is_set():
+            raise Onderbroken()
+
+    def zet_voortgang(self, fase: str, index: int, totaal: int, label: str = "") -> None:
+        self.check()
+        self.voortgang(fase, index, totaal, label)
+
+    def sub(self, fractie: float, label: str = "") -> None:
+        self.check()
+        self.deelvoortgang(max(0.0, min(1.0, fractie)), label)
+
+
+# --------------------------------------------------------------------------
+# Processen draaien (met de mogelijkheid om te onderbreken)
+# --------------------------------------------------------------------------
+
+def draai_proces(
+    cmd: list[str],
+    ctx: Context,
+    cwd: Path | None = None,
+    toon_regels: Callable[[str], None] | None = None,
+    time_out: float | None = None,
+) -> tuple[int, str]:
+    """Draai een commando en geef (returncode, uitvoer).
+
+    De uitvoer wordt regel voor regel gelezen in een aparte thread, zodat we
+    kunnen reageren op de stopknop zonder het proces te blokkeren.
+    """
+    ctx.check()
+    try:
+        proces = subprocess.Popen(
+            cmd,
+            cwd=str(cwd) if cwd else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+            bufsize=1,
+        )
+    except FileNotFoundError as fout:
+        raise Fout(f"{cmd[0]} niet gevonden: {fout}") from fout
+
+    regels: list[str] = []
+    bak: queue.Queue[str | None] = queue.Queue()
+
+    def lees() -> None:
+        try:
+            if proces.stdout is not None:
+                for regel in proces.stdout:
+                    bak.put(regel)
+        finally:
+            bak.put(None)
+
+    lezer = threading.Thread(target=lees, daemon=True)
+    lezer.start()
+    start = time.monotonic()
+    afgerond = False
+
+    while True:
+        if ctx.stop.is_set():
+            _dood_proces(proces)
+            raise Onderbroken()
+        if time_out and time.monotonic() - start > time_out:
+            _dood_proces(proces)
+            raise Fout(f"{cmd[0]} duurde te lang ({time_out:.0f} s) en is gestopt.")
+        try:
+            regel = bak.get(timeout=0.25)
+        except queue.Empty:
+            continue
+        if regel is None:
+            afgerond = True
+            break
+        regels.append(regel)
+        if toon_regels:
+            toon_regels(regel.rstrip())
+
+    lezer.join(timeout=2)
+    returncode = proces.wait(timeout=10)
+    if not afgerond:  # pragma: no cover - alleen bij vreemde uitvoer
+        regels.append("")
+    return returncode, "".join(regels)
+
+
+def _dood_proces(proces: subprocess.Popen) -> None:
+    """Stop een proces en al zijn kinderen."""
+    try:
+        proces.terminate()
+        proces.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            proces.kill()
+            proces.wait(timeout=5)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def beschikbare_js_runtimes() -> list[str]:
+    gevonden = [naam for naam in ("deno", "node") if shutil.which(naam)]
+    if gevonden:
+        return ["--js-runtimes", ",".join(gevonden)]
+    return []
+
+
+# --------------------------------------------------------------------------
+# Kleine hulpfuncties
+# --------------------------------------------------------------------------
+
+def schoon(tekst: str) -> str:
+    """Maak een tekst geschikt voor een bestandsnaam."""
+    tekst = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", tekst)
+    tekst = re.sub(r"\s+", " ", tekst).strip(" .")
+    return (tekst[:120].strip(" .")) or "naamloos"
+
+
+def sleutel(artiest: str, titel: str) -> str:
+    return re.sub(r"\s+", " ", f"{artiest.casefold()} – {titel.casefold()}")
+
+
+def mp3_bestanden(map_: Path) -> list[Path]:
+    if not map_.is_dir():
+        return []
+    return sorted(p for p in map_.iterdir() if p.is_file() and p.suffix.lower() == ".mp3")
+
+
+def mp4_bestanden(map_: Path) -> list[Path]:
+    if not map_.is_dir():
+        return []
+    return sorted(p for p in map_.iterdir() if p.is_file() and p.suffix.lower() == ".mp4")
+
+
+def grootte_van(pad: Path) -> str:
+    """Mooie bestandsgrootte, bijvoorbeeld '3,4 MB'."""
+    try:
+        bytes_ = pad.stat().st_size
+    except OSError:
+        return "? B"
+    for eenheid, stap in (("GB", 1024**3), ("MB", 1024**2), ("kB", 1024)):
+        if bytes_ >= stap:
+            waarde = bytes_ / stap
+            return f"{waarde:.1f} {eenheid}".replace(".", ",")
+    return f"{bytes_} B"
+
+
+def unieke_naam(map_: Path, naam: str) -> Path:
+    doel = map_ / naam
+    if not doel.exists():
+        return doel
+    pad = Path(naam)
+    n = 2
+    while True:
+        doel = map_ / f"{pad.stem} ({n}){pad.suffix}"
+        if not doel.exists():
+            return doel
+        n += 1
+
+
+def zonder_prefix(naam: str) -> str:
+    return re.sub(r"^\d{1,9}-", "", naam)
+
+
+# --------------------------------------------------------------------------
+# Stap 1: scrapen
+# --------------------------------------------------------------------------
+
+_sess = None
+
+
+def _http() -> "object":
+    global _sess
+    if _sess is None:
+        import requests
+
+        _sess = requests.Session()
+        _sess.headers["User-Agent"] = USER_AGENT
+    return _sess
+
+
+def haal_pagina(ctx: Context, jaar: int, week: int) -> str | None:
+    """Haal één hitlijstpagina op; None als die week niet bestaat."""
+    url = BRON.format(jaar=jaar, week=week)
+    laatste_fout: Exception | None = None
+    for poging in range(3):
+        ctx.check()
+        try:
+            antwoord = _http().get(url, timeout=25)
+        except Exception as fout:  # netwerkfout
+            laatste_fout = fout
+            time.sleep(2**poging)
+            continue
+        if antwoord.status_code == 404:
+            return None
+        if antwoord.status_code == 200:
+            return antwoord.text
+        if antwoord.status_code in (429, 500, 502, 503, 504) and poging < 2:
+            time.sleep(2**poging)
+            continue
+        raise Fout(f"HTTP {antwoord.status_code} bij {url}")
+    ctx.log(f"  {url} niet bereikbaar: {laatste_fout}")
+    return None
+
+
+def paren_treffers(html: str) -> list[dict]:
+    from bs4 import BeautifulSoup
+
+    sop = BeautifulSoup(html, "html.parser")
+    lijst = sop.select_one("ol.chart")
+    if lijst is not None:
+        knopen = lijst.select("li.entry")
+    else:
+        knopen = sop.select(".chartentry")
+    uit: list[dict] = []
+    for knoop in knopen:
+        artiest_el = knoop.select_one("span.artiest")
+        titel_el = knoop.select_one("span.titel")
+        if not artiest_el or not titel_el:
+            continue
+        uit.append(
+            {
+                "artiest": artiest_el.get_text(" ", strip=True),
+                "titel": titel_el.get_text(" ", strip=True),
+            }
+        )
+    return uit
+
+
+def weken_voor(jaar: int) -> Iterable[int]:
+    start = EERSTE_WEEK_1970 if jaar == EERSTEJAAR else 1
+    return range(start, MAX_WEEK + 1)
+
+
+def controleer_jaren(begin: int, eind: int) -> tuple[int, int, list[str]]:
+    """Zet de grenzen goed en geef de waarschuwingen terug."""
+    waarschuwingen: list[str] = []
+    huidig_jaar = time.localtime().tm_year
+    if begin < EERSTEJAAR:
+        waarschuwingen.append(
+            f"De hitlijst begint pas in {EERSTEJAAR} (week {EERSTE_WEEK_1970}); "
+            f"beginjaar wordt {EERSTEJAAR}."
+        )
+        begin = EERSTEJAAR
+    if eind > huidig_jaar:
+        waarschuwingen.append(f"Eindjaar wordt {huidig_jaar} (het lopende jaar).")
+        eind = huidig_jaar
+    if begin > eind:
+        raise Fout("Beginjaar mag niet groter zijn dan eindjaar.")
+    return begin, eind, waarschuwingen
+
+
+def scrape(ctx: Context, begin: int, eind: int, overschrijven: bool = False) -> list[dict]:
+    """Lees de hitlijsten van hitnoteringen.be en schrijf het hits-bestand."""
+    doel = ctx.paden.hits_bestand(begin, eind)
+    if doel.exists() and not overschrijven:
+        ctx.log(f"{doel.name} bestaat al; ik gebruik de bestaande lijst.")
+        return laad_hits(ctx, begin, eind)
+
+    ctx.log(f"Scrapen van {begin} tot en met {eind} ...")
+    gezien: set[str] = set()
+    hits: list[dict] = []
+    jaren = list(range(begin, eind + 1))
+    for nr, jaar in enumerate(jaren, 1):
+        ctx.zet_voortgang("scrapen", nr - 1, len(jaren), f"{jaar}")
+        nieuw = 0
+        for week in weken_voor(jaar):
+            ctx.check()
+            html = haal_pagina(ctx, jaar, week)
+            if html is None:
+                continue
+            for treffer in paren_treffers(html):
+                k = sleutel(treffer["artiest"], treffer["titel"])
+                if k in gezien:
+                    continue
+                gezien.add(k)
+                hits.append({**treffer, "jaar": jaar})
+                nieuw += 1
+            time.sleep(0.15)
+        ctx.log(f"  {jaar}: {nieuw} nieuwe nummers ({len(hits)} uniek tot nu toe)")
+    ctx.zet_voortgang("scrapen", len(jaren), len(jaren), "klaar")
+
+    if not hits:
+        raise Fout("Scrapen leverde geen nummers op. Klopt de website nog?")
+
+    schrijf_hits(ctx, hits, begin, eind)
+    ctx.log(f"{len(hits)} unieke nummers weggeschreven naar {doel.name}")
+    return hits
+
+
+def schrijf_hits(ctx: Context, hits: list[dict], begin: int, eind: int) -> Path:
+    doel = ctx.paden.hits_bestand(begin, eind)
+    regels = [f"{h['artiest']} - {h['titel']} - {h['jaar']}" for h in hits]
+    doel.write_text("\n".join(regels) + "\n", encoding="utf-8")
+    doel.with_suffix(".json").write_text(
+        json.dumps(hits, ensure_ascii=False, indent=1), encoding="utf-8"
+    )
+    return doel
+
+
+def uit_regel(regel: str) -> dict:
+    hoofd, jaartal = regel.rsplit(" - ", 1)
+    artiest, _, titel = hoofd.partition(" - ")
+    return {"artiest": artiest, "titel": titel, "jaar": int(jaartal)}
+
+
+def laad_hits(ctx: Context, begin: int, eind: int) -> list[dict]:
+    """Lees het hits-bestand voor het gegeven jaarspanne."""
+    doel = ctx.paden.hits_bestand(begin, eind)
+    if not doel.exists():
+        raise Fout(
+            f"{doel.name} ontbreekt in {ctx.paden.werk}.\n"
+            "Kies 'Alleen scrapen' om hem eerst te maken."
+        )
+    json_bestand = doel.with_suffix(".json")
+    if json_bestand.exists():
+        hits = json.loads(json_bestand.read_text(encoding="utf-8"))
+    else:
+        hits = [
+            uit_regel(r) for r in doel.read_text(encoding="utf-8").splitlines() if r.strip()
+        ]
+    ctx.log(f"{len(hits)} nummers geladen uit {doel.name}")
+    return hits
+
+
+# --------------------------------------------------------------------------
+# Manifest: welke mp4's zijn er al?
+# --------------------------------------------------------------------------
+
+def laad_manifest(ctx: Context) -> list[dict]:
+    pad = ctx.paden.manifest
+    if pad.exists():
+        try:
+            return json.loads(pad.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+    return []
+
+
+def bewaar_manifest(ctx: Context, items: list[dict]) -> None:
+    pad = ctx.paden.manifest
+    tmp = pad.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(items, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(pad)
+
+
+# --------------------------------------------------------------------------
+# Stap 2: downloaden van YouTube
+# --------------------------------------------------------------------------
+
+# Zoekvoortgang binnen de video die bezig is (voor de voortgangsbalk).
+_voortgang_meter = re.compile(r"\[download\]\s+(\d{1,3}(?:[.,]\d+)?)%")
+
+
+def _cookie_opties(ctx: Context) -> list[str]:
+    """Welke cookie-bron gebruikt yt-dlp?"""
+    if ctx.paden.cookies.exists():
+        return ["--cookies", str(ctx.paden.cookies)]
+    browser = (ctx.cookie_browser or "geen").strip().lower()
+    if browser in ("", "geen", "none"):
+        return []
+    return ["--cookies-from-browser", browser]
+
+
+def _basis_opties() -> list[str]:
+    return [
+        "--ignore-config",
+        "--no-colors",
+        *beschikbare_js_runtimes(),
+        "--no-playlist",
+        "--sleep-requests", "1",
+        "--retries", "5",
+        "--fragment-retries", "5",
+    ]
+
+
+def _download_cmd(ctx: Context, bron: str, doel: Path) -> list[str]:
+    return [
+        sys.executable, "-m", "yt_dlp",
+        *_basis_opties(),
+        "--remote-components", "ejs:github",
+        "-f", "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720][ext=mp4]/b[ext=m4a]/b",
+        "--merge-output-format", "mp4",
+        "--remux-video", "mp4",
+        "--no-mtime",
+        "-o", str(doel.with_suffix("").with_name(doel.stem + ".%(ext)s")),
+        *_cookie_opties(ctx),
+        bron,
+    ]
+
+
+def _zoek_cmd(ctx: Context, artiest: str, titel: str, aantal: int) -> list[str]:
+    return [
+        sys.executable, "-m", "yt_dlp",
+        *_basis_opties(),
+        "--remote-components", "ejs:github",
+        "--flat-playlist",
+        "--print", "%(id)s",
+        f"ytsearch{aantal}:{artiest} {titel}",
+        *_cookie_opties(ctx),
+    ]
+
+
+def _vind_eindbestand(ctx: Context, doel: Path) -> Path | None:
+    """Na een download ligt het bestand soms met een andere extensie."""
+    if doel.exists() and doel.stat().st_size > 0:
+        return doel
+    toegestaan = {".mp4", ".webm", ".mkv", ".m4a", ".mov"}
+    kandidaten = [
+        p for p in doel.parent.glob(doel.stem + ".*")
+        if p.suffix.lower() in toegestaan and p.stat().st_size > 0
+    ]
+    if len(kandidaten) != 1:
+        return None
+    bron = kandidaten[0]
+    code, uitvoer = draai_proces(
+        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(bron),
+         "-c", "copy", str(doel)],
+        ctx,
+    )
+    if code == 0 and doel.exists():
+        bron.unlink(missing_ok=True)
+        return doel
+    if bron.suffix.lower() == ".mp4":
+        bron.rename(doel)
+        return doel
+    return None
+
+
+def _laatste_fout(uitvoer: str) -> str:
+    regels = [r for r in uitvoer.splitlines() if r.strip()]
+    laatste = next((r for r in reversed(regels) if "ERROR" in r or "WARNING" in r), None)
+    return (laatste or (regels[-1] if regels else "onbekende fout")).strip()
+
+
+def _yt_dlp_luister(ctx: Context, laatste: list[str]):
+    """Callback voor de yt-dlp-uitvoer.
+
+    yt-dlp is heel erg geschreeuwd; alleen de voortgang (voor de balk) en echte
+    fouten worden doorgegeven, zodat de console leesbaar blijft.
+    """
+    def luister(regel: str) -> None:
+        if not regel:
+            return
+        laatste.append(regel)
+        m = _voortgang_meter.search(regel)
+        if m:
+            ctx.sub(float(m.group(1).replace(",", ".")) / 100.0, regel.strip())
+            return
+        schoon = regel.strip()
+        if schoon.startswith(("ERROR", "WARNING")):
+            ctx.log("  " + schoon)
+    return luister
+
+
+def _download_een(ctx: Context, bron: str, doel: Path) -> tuple[Path | None, str]:
+    """Download één video. Geeft (pad of None, foutmelding)."""
+    for poging in range(1, 4):
+        fragmenten: list[str] = []
+        try:
+            code, uitvoer = draai_proces(
+                _download_cmd(ctx, bron, doel),
+                ctx,
+                toon_regels=_yt_dlp_luister(ctx, fragmenten),
+            )
+        except Onderbroken:
+            _verwijder_gespletst(ctx, doel)
+            raise
+        volledig = uitvoer + "\n" + "\n".join(fragmenten)
+        if code == 0:
+            eindpad = _vind_eindbestand(ctx, doel)
+            if eindpad:
+                return eindpad, ""
+            volledig += "\n geen eindbestand gevonden na het downloaden"
+        laag = volledig.lower()
+        if poging < 3 and any(x in laag for x in TIJDELIJK):
+            wacht = poging * 5
+            ctx.log(f"  tijdelijke YouTube-fout; {wacht} s wachten en opnieuw proberen ...")
+            for _ in range(wacht * 4):
+                ctx.check()
+                time.sleep(0.25)
+            continue
+        with ctx.paden.foutenlog.open("a", encoding="utf-8") as f:
+            f.write(f"\n=== {bron} ===\n{volledig[-4000:]}\n")
+        _verwijder_gespletst(ctx, doel)
+        return None, _laatste_fout(volledig)
+    return None, "onbekende fout"
+
+
+def _verwijder_gespletst(ctx: Context, doel: Path) -> None:
+    """Ruim half gedownloade brokstukken op."""
+    for patroon in ("*.part", "*.ytdl", "*.f*.mp4", "*.temp.mp4"):
+        for pad in doel.parent.glob(doel.stem + patroon):
+            pad.unlink(missing_ok=True)
+
+
+def _zoek_videos(ctx: Context, artiest: str, titel: str, aantal: int) -> list[str]:
+    try:
+        code, uitvoer = draai_proces(_zoek_cmd(ctx, artiest, titel, aantal), ctx)
+    except Onderbroken:
+        raise
+    if code != 0:
+        return []
+    return [
+        f"https://www.youtube.com/watch?v={r.strip()}"
+        for r in uitvoer.splitlines()
+        if r.strip() and len(r.strip()) >= 11
+    ]
+
+
+def download(ctx: Context, hits: list[dict]) -> list[dict]:
+    """Download elk nummer als mp4 naar de mp4-map."""
+    mp4 = ctx.paden.mp4
+    mp4.mkdir(parents=True, exist_ok=True)
+    eerdere = {sleutel(h["artiest"], h["titel"]): h for h in laad_manifest(ctx)}
+    manifest: list[dict] = []
+    gebruikte_stems: dict[str, str] = {}
+    mislukt: list[tuple[dict, str]] = []
+    totaal = len(hits)
+
+    for i, hit in enumerate(hits, 1):
+        k = sleutel(hit["artiest"], hit["titel"])
+        ctx.zet_voortgang("downloaden", i - 1, totaal, f"{hit['artiest']} - {hit['titel']}")
+        ctx.sub(0.0, f"{i}/{totaal}")
+
+        # Al gedownload? Dan overslaan maar wel in het manifest houden.
+        oud = eerdere.get(k)
+        if oud and _klaar(ctx, oud):
+            gebruikte_stems.setdefault(Path(oud["file"]).stem, k)
+            manifest.append(oud)
+            ctx.log(f"  · al aanwezig: {oud['file']}")
+            continue
+
+        # Unieke bestandsnaam maken binnen de mp4-map.
+        basis = schoon(f"{hit['artiest']} - {hit['titel']}")
+        stem = basis
+        n = 2
+        while stem in gebruikte_stems and gebruikte_stems[stem] != k:
+            stem = f"{basis} ({n})"
+            n += 1
+        gebruikte_stems[stem] = k
+        doel = mp4 / f"{stem}.mp4"
+
+        if doel.exists() and doel.stat().st_size > 0:
+            manifest.append({**hit, "file": doel.name})
+            bewaar_manifest(ctx, manifest)
+            continue
+
+        eindpad, fout = _download_een(ctx, f"ytsearch1:{hit['artiest']} {hit['titel']}", doel)
+
+        # YouTube wil misschien inloggen: zoek dan naar alternatieve video's.
+        if eindpad is None and fout and any(x in fout.lower() for x in INLOGFOUT):
+            ctx.log(f"  YouTube wil inloggen ({fout[:120]}); ik zoek een alternatief ...")
+            for url in _zoek_videos(ctx, hit["artiest"], hit["titel"], 5):
+                eindpad, fout = _download_een(ctx, url, doel)
+                if eindpad is not None:
+                    break
+
+        if eindpad is None:
+            mislukt.append((hit, fout))
+            ctx.log(f"  MISLUKT: {fout}")
+            continue
+
+        manifest.append({**hit, "file": eindpad.name})
+        bewaar_manifest(ctx, manifest)
+        ctx.log(f"  ✓ {eindpad.name} ({grootte_van(eindpad)})")
+        wacht = random.uniform(0.4, 1.2)
+        for _ in range(int(wacht * 4)):
+            ctx.check()
+            time.sleep(0.25)
+
+    ctx.zet_voortgang("downloaden", totaal, totaal, "klaar")
+    bewaar_manifest(ctx, manifest)
+    ctx.log(f"Downloaden klaar: {len(manifest)} klaar, {len(mislukt)} mislukt.")
+    if mislukt:
+        ctx.log(
+            f"Mislukte nummers staan in {ctx.paden.foutenlog.name}; "
+            "start 'Alleen downloaden' opnieuw om ze opnieuw te proberen."
+        )
+    return manifest
+
+
+def _klaar(ctx: Context, record: dict) -> bool:
+    """Is dit nummer al gedownload óf al geconverteerd?"""
+    pad = ctx.paden.mp4 / record["file"]
+    if pad.exists() and pad.stat().st_size > 0:
+        return True
+    return mp3_bestaat(ctx, record["file"])
+
+
+def mp3_bestaat(ctx: Context, mp4_naam: str) -> bool:
+    """Komt er al een mp3 met dezelfde naam bestaan (in mp3-map of muziekmap)?"""
+    stam = Path(mp4_naam).stem
+    for map_ in (ctx.paden.mp3, ctx.paden.muziek):
+        if not map_.is_dir():
+            continue
+        for pad in map_.iterdir():
+            if pad.suffix.lower() != ".mp3" or not pad.is_file():
+                continue
+            if not pad.stat().st_size:
+                continue
+            if pad.stem == stam or zonder_prefix(pad.name) == stam:
+                return True
+    return False
+
+
+# --------------------------------------------------------------------------
+# Stap 3: converteren naar mp3
+# --------------------------------------------------------------------------
+
+def zet_tags(pad: Path, record: dict) -> None:
+    from mutagen.id3 import (
+        COMM, ID3, ID3NoHeaderError, TALB, TCON, TDRC, TIT2, TPE1,
+    )
+
+    try:
+        tags = ID3(pad)
+    except ID3NoHeaderError:
+        tags = ID3()
+    for frame in ("TPE1", "TIT2", "TALB", "TCON", "TDRC", "COMM", "TSSE"):
+        tags.delall(frame)
+    tags.add(TPE1(encoding=3, text=[record["artiest"]]))
+    tags.add(TIT2(encoding=3, text=[record["titel"]]))
+    tags.add(TALB(encoding=3, text=[ALBUM]))
+    tags.add(TCON(encoding=3, text=[GENRE]))
+    jaar = str(record.get("jaar") or "").strip()
+    if jaar:
+        tags.add(TDRC(encoding=3, text=[jaar]))
+        tags.add(COMM(encoding=3, lang="eng", desc="",
+                      text=[OMSCHRIJVING.format(jaar=jaar)]))
+    tags.save(pad)
+
+
+def convert(ctx: Context, verwijder_mp4: bool = False) -> dict:
+    """Zet alle mp4's uit de mp4-map om naar mp3 in de mp3-map."""
+    ctx.paden.mp3.mkdir(parents=True, exist_ok=True)
+    bronnen = laad_manifest(ctx)
+
+    # Zonder manifest: neem gewoon alles dat in de mp4-map ligt en leid de
+    # artiest/titel uit de bestandsnaam af.
+    if not bronnen:
+        bronnen = []
+        for p in mp4_bestanden(ctx.paden.mp4):
+            delen = p.stem.split(" - ", 1)
+            bronnen.append(
+                {
+                    "file": p.name,
+                    "artiest": delen[0],
+                    "titel": delen[1] if len(delen) > 1 else delen[0],
+                    "jaar": "",
+                }
+            )
+        if bronnen:
+            ctx.log(
+                f"{len(bronnen)} mp4-bestanden gevonden (zonder manifest); "
+                "ik leid de tags af uit de bestandsnaam."
+            )
+
+    totaal = len(bronnen)
+    nieuw = al_aanwezig = fout = 0
+    for i, record in enumerate(bronnen, 1):
+        ctx.zet_voortgang("converteren", i - 1, totaal,
+                          f"{record.get('artiest', '')} - {record.get('titel', '')}")
+        bron = ctx.paden.mp4 / record["file"]
+        doel = ctx.paden.mp3 / (Path(record["file"]).stem + ".mp3")
+
+        if (doel.exists() and doel.stat().st_size > 0) or mp3_bestaat(ctx, record["file"]):
+            al_aanwezig += 1
+            continue
+        if not bron.exists() or not bron.stat().st_size:
+            ctx.log(f"  ontbreekt in {ctx.paden.mp4.name}/: {record['file']}")
+            fout += 1
+            continue
+
+        try:
+            code, uitvoer = draai_proces(
+                ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                 "-i", str(bron), "-vn", "-map_metadata", "-1",
+                 "-codec:a", "libmp3lame", "-q:a", str(ctx.mp3_kwaliteit), str(doel)],
+                ctx,
+            )
+        except Onderbroken:
+            doel.unlink(missing_ok=True)
+            raise
+        if code != 0 or not doel.exists():
+            regels = [r for r in uitvoer.splitlines() if r.strip()]
+            ctx.log(f"  ffmpeg-fout op {record['file']}: {regels[-1] if regels else 'onbekend'}")
+            doel.unlink(missing_ok=True)
+            fout += 1
+            continue
+        try:
+            zet_tags(doel, record)
+        except Exception as tag_fout:
+            ctx.log(f"  tags konden niet geschreven worden: {tag_fout}")
+        nieuw += 1
+
+    ctx.zet_voortgang("converteren", totaal, totaal, "klaar")
+
+    verwijderd = 0
+    if verwijder_mp4:
+        verwijderd = _ruim_mp4_op(ctx)
+        if verwijderd:
+            ctx.log(f"Opgeruimd: {verwijderd} mp4-bestanden verwijderd (mp3 is klaar).")
+
+    ctx.log(f"Converteren klaar: {nieuw} nieuw, {al_aanwezig} al aanwezig, {fout} fout/overgeslagen.")
+    return {"nieuw": nieuw, "aanwezig": al_aanwezig, "fout": fout, "verwijderd": verwijderd}
+
+
+def _ruim_mp4_op(ctx: Context) -> int:
+    """Verwijder mp4's waarvan het mp3-bestand al klaarstaat."""
+    klaar = {p.stem for p in mp3_bestanden(ctx.paden.mp3)}
+    for p in mp3_bestanden(ctx.paden.muziek):
+        klaar.add(zonder_prefix(p.name)[:-len(Path(p.name).suffix)])
+    verwijderd = 0
+    for pad in mp4_bestanden(ctx.paden.mp4):
+        if pad.stem in klaar:
+            pad.unlink(missing_ok=True)
+            verwijderd += 1
+    return verwijderd
+
+
+# --------------------------------------------------------------------------
+# Stap 4: verplaatsen naar de muziekmap
+# --------------------------------------------------------------------------
+
+def verplaats(ctx: Context, hernoem: bool = True, startnummer: int = 1) -> int:
+    """Verplaats de mp3's uit de mp3-map naar de muziekmap."""
+    bestanden = mp3_bestanden(ctx.paden.mp3)
+    if not bestanden:
+        ctx.log(f"Geen mp3-bestanden om te verplaatsen in {ctx.paden.mp3}.")
+        return 0
+    ctx.paden.muziek.mkdir(parents=True, exist_ok=True)
+    totaal = len(bestanden)
+    for i, pad in enumerate(bestanden, 1):
+        ctx.zet_voortgang("verplaatsen", i, totaal, pad.name)
+        shutil.move(str(pad), str(unieke_naam(ctx.paden.muziek, pad.name)))
+    ctx.log(f"{totaal} mp3-bestanden verplaatst naar {ctx.paden.muziek}.")
+
+    if hernoem and mp3_bestanden(ctx.paden.muziek):
+        nummer_hernoemen(ctx, startnummer=startnummer)
+    return totaal
+
+
+def prefix_breedte(aantal: int, minimum: int = PREFIX_BREEDTE_MIN) -> int:
+    """Hoeveel cijfers de prefix nodig heeft voor `aantal` bestanden.
+
+    Zoveel cijfers als het hoogste nummer nodig heeft, met een minimum van twee:
+
+    ==========  ==========  ==============
+    bestanden   breedte     voorbeeld
+    ==========  ==========  ==============
+    40          2           01-
+    99          2           99-
+    100         3           100-
+    700         3           001-
+    1200        4           0001-
+    ==========  ==========  ==============
+
+    Omdat het programma de hele map bij elke run opnieuw nummert, past de
+    breedte zich automatisch aan zodra het aantal verandert.
+    """
+    if aantal <= 0:
+        return minimum
+    return max(minimum, len(str(aantal)))
+
+
+def nummer_hernoemen(ctx: Context, map_: Path | None = None,
+                     startnummer: int = 1,
+                     breedte: int | None = None) -> list[tuple[Path, Path]]:
+    """Schud de bestanden en zet ze opnieuw onder een numerieke prefix.
+
+    De breedte van de prefix volgt automatisch uit het aantal bestanden in de
+    map, tenzij je die met `breedte` vastzet.
+    """
+    map_ = ctx.paden.muziek if map_ is None else map_
+    bestanden = mp3_bestanden(map_)
+    if not bestanden:
+        raise Fout(f"Geen mp3-bestanden gevonden in {map_}.")
+    volgorde = _schud_zonder_twee_keer_zelfde_artiest(bestanden)
+    hoogste = startnummer + len(volgorde) - 1
+    if breedte is None:
+        breedte = prefix_breedte(hoogste)
+    plan: list[tuple[Path, Path]] = []
+    gebruikt: set[str] = set()
+    for i, pad in enumerate(volgorde):
+        naam = f"{startnummer + i:0{breedte}d}-{zonder_prefix(pad.name)}"
+        n = 2
+        while naam.casefold() in gebruikt:
+            naam = f"{startnummer + i:0{breedte}d}-{zonder_prefix(pad.stem)} ({n}){pad.suffix}"
+            n += 1
+        gebruikt.add(naam.casefold())
+        plan.append((pad, pad.with_name(naam)))
+
+    ctx.log(f"{len(plan)} bestanden in {map_} gaan opnieuw geschud en genummerd.")
+    verwerk_nummerplan(ctx, map_, plan)
+    ctx.log(
+        f"Klaar: bestanden voorzien van een nieuwe prefix vanaf "
+        f"{startnummer:0{breedte}d} (tot {hoogste:0{breedte}d})."
+    )
+    return plan
+
+
+def _schud_zonder_twee_keer_zelfde_artiest(bestanden: list[Path]) -> list[Path]:
+    random.shuffle(bestanden)
+    if len(bestanden) < 3:
+        return bestanden
+    groepen: dict[str, list[Path]] = {}
+    for pad in bestanden:
+        artiest = pad.name.split(" - ", 1)[0].casefold()
+        groepen.setdefault(artiest, []).append(pad)
+    volgorde: list[Path] = []
+    vorige: str | None = None
+    while groepen:
+        keuzes = [a for a in groepen if a != vorige] or list(groepen)
+        artiest = random.choice(sorted(keuzes))
+        volgorde.append(groepen[artiest].pop())
+        if not groepen[artiest]:
+            del groepen[artiest]
+        vorige = artiest
+    return volgorde
+
+
+def verwerk_nummerplan(ctx: Context, map_: Path, plan: list[tuple[Path, Path]]) -> int:
+    """Voer een hernoemplan uit via een tijdelijke map, met terugdraaien."""
+    doers = [(oud, nieuw) for oud, nieuw in plan if oud != nieuw]
+    if not doers:
+        return 0
+    tmp = map_ / f".top30_nummer_{os.getpid()}"
+    tmp.mkdir()
+    totaal = len(doers)
+    try:
+        for i, (oud, nieuw) in enumerate(doers):
+            ctx.check()
+            ctx.zet_voortgang("hernoemen", i, totaal, nieuw.name)
+            oud.rename(tmp / f"{i:08d}.mp3")
+        for (oud, nieuw), bron in zip(doers, sorted(tmp.iterdir())):
+            bron.rename(map_ / nieuw.name)
+        tmp.rmdir()
+    except BaseException:
+        for i, (oud, nieuw) in enumerate(doers):
+            bron = tmp / f"{i:08d}.mp3"
+            try:
+                if bron.exists():
+                    bron.rename(oud)
+                elif nieuw.exists() and nieuw != oud:
+                    nieuw.rename(oud)
+            except OSError:
+                pass
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    return len(doers)
+
+
+def fixprefix(ctx: Context) -> int:
+    """Zet alle prefixen op de breedte die bij het aantal bestanden hoort.
+
+    Voor 700 bestanden wordt dat bijvoorbeeld 001- in plaats van 00001-.
+    """
+    map_ = ctx.paden.muziek
+    if not map_.is_dir():
+        raise Fout(f"{map_} bestaat niet.")
+    aantal = len(mp3_bestanden(map_))
+    breedte = prefix_breedte(aantal)
+    hernoemd = 0
+    for pad in sorted(map_.iterdir()):
+        ctx.check()
+        if not pad.is_file():
+            continue
+        m = re.match(r"^(\d{1,9})-(.+)", pad.name)
+        if not m:
+            continue
+        nieuw = f"{int(m.group(1)):0{breedte}d}-{m.group(2).lstrip('-')}"
+        if nieuw == pad.name or pad.with_name(nieuw).exists():
+            continue
+        pad.rename(pad.with_name(nieuw))
+        hernoemd += 1
+    ctx.log(
+        f"{hernoemd} van {aantal} bestanden in {map_} naar een "
+        f"{breedte}-cijferige prefix gezet."
+    )
+    return hernoemd
+
+
+# --------------------------------------------------------------------------
+# De hele rit
+# --------------------------------------------------------------------------
+
+def voer_alles(ctx: Context, begin: int, eind: int, verwijder_mp4: bool = True,
+               hernoem: bool = True) -> None:
+    """De volledige route: scrapen, downloaden, converteren, verplaatsen."""
+    ctx.log("=" * 62)
+    ctx.log("1/4  Hitlijsten ophalen")
+    ctx.log("=" * 62)
+    hits = scrape(ctx, begin, eind)
+
+    ctx.log("")
+    ctx.log("=" * 62)
+    ctx.log("2/4  Downloaden van YouTube")
+    ctx.log("=" * 62)
+    download(ctx, hits)
+
+    ctx.log("")
+    ctx.log("=" * 62)
+    ctx.log("3/4  Converteren naar mp3")
+    ctx.log("=" * 62)
+    convert(ctx, verwijder_mp4=verwijder_mp4)
+
+    ctx.log("")
+    ctx.log("=" * 62)
+    ctx.log("4/4  Verplaatsen naar de muziekmap")
+    ctx.log("=" * 62)
+    verplaats(ctx, hernoem=hernoem)
+
+
+def samenvatting(paden: Paden | Context) -> dict:
+    """Tellen wat er al op schijf staat (voor de GUI).
+
+    Aanvaardt zowel een `Paden` als een `Context`, zodat de GUI niet eerst een
+    volledige context hoeft te bouwen.
+    """
+    if isinstance(paden, Context):
+        paden = paden.paden
+    hits_bestanden = sorted(paden.werk.glob("hits_*_*.json"))
+    aantal_hits = 0
+    for pad in hits_bestanden:
+        try:
+            aantal_hits = max(aantal_hits, len(json.loads(pad.read_text(encoding="utf-8"))))
+        except (OSError, ValueError):
+            continue
+    return {
+        "hits": aantal_hits,
+        "mp4": len(mp4_bestanden(paden.mp4)),
+        "mp3": len(mp3_bestanden(paden.mp3)),
+        "muziek": len(mp3_bestanden(paden.muziek)),
+    }
