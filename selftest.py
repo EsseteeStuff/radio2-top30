@@ -428,6 +428,131 @@ def test_gui(maak_scherm: bool = False) -> None:
     check("kaart heet TAAK, niet TAK", "TAAK" in kaarttitels and "TAK" not in kaarttitels,
           str([t for t in kaarttitels if t.isupper()]))
 
+    # Venstergrootte onthouden ---------------------------------------------
+    # De settings.json is met de hand te wijzigen, dus alle onzin die erin kan
+    # staan moet genegeerd worden in plaats van een exception te geven.
+    for invoer, verwacht in [
+        (None, 0), ("", 0), ("abc", 0), ([], 0), ({}, 0),
+        (0, 0), (-5, 0), ("0", 0), (1200, 1200), ("1200", 1200), (900.7, 900),
+    ]:
+        check(f"onzin in instellingen wordt genegeerd: {invoer!r}",
+              top30_gui._als_getal(invoer) == verwacht,
+              f"{top30_gui._als_getal(invoer)}")
+
+    # Een venster met opgegeven afmetingen moet die afmetingen krijgen.
+    op_grootte = top30_gui.Venster("donker",
+                                  {"venster_breedte": 1200, "venster_hoogte": 820})
+    check("venster opent op de bewaarde grootte",
+          (op_grootte.width(), op_grootte.height()) == (1200, 820),
+          f"{op_grootte.width()}x{op_grootte.height()}")
+    check("onthouden geeft terug wat erop staat",
+          op_grootte.onthoud_afmetingen() ==
+          {"venster_breedte": 1200, "venster_hoogte": 820, "venster_max": False},
+          str(op_grootte.onthoud_afmetingen()))
+
+    # Kleiner dan het minimum mag niet: dan knipt Qt het venster af.
+    te_klein = top30_gui.Venster("donker",
+                                 {"venster_breedte": 200, "venster_hoogte": 100})
+    check("te kleine afmeting wordt opgeklokt naar het minimum",
+          (te_klein.width(), te_klein.height()) == (940, 660),
+          f"{te_klein.width()}x{te_klein.height()}")
+    check("minimumgrootte geldt nog steeds", (te_klein.minimumWidth(),
+                                              te_klein.minimumHeight()) == (940, 660),
+          f"{te_klein.minimumWidth()}x{te_klein.minimumHeight()}")
+
+    # Zonder afmetingen valt het terug op de standaardgrootte.
+    check("zonder afmetingen blijft het 1080x760",
+          (venster.width(), venster.height()) == (1080, 760),
+          f"{venster.width()}x{venster.height()}")
+
+    # Onzin in de afmetingen mag het venster niet kleiner maken.
+    kapot = top30_gui.Venster("donker",
+                              {"venster_breedte": "geen getal", "venster_hoogte": None})
+    check("kapotte afmetingen geven de standaardgrootte",
+          (kapot.width(), kapot.height()) == (1080, 760),
+          f"{kapot.width()}x{kapot.height()}")
+
+    # Gemaximeraliseerd openen. Het venster is op dit moment nog niet
+    # zichtbaar, dus dit werkt alleen als setWindowState wordt gebruikt.
+    maxi = top30_gui.Venster("donker",
+                             {"venster_breedte": 1150, "venster_hoogte": 800,
+                              "venster_max": True})
+    maxi.show()
+    check("venster opent gemaximeraliseerd", maxi.isMaximized())
+    check("gemaximeraliseerd blijft gemaximeraliseerd bij sluiten",
+          (maxi.close(), kern.laad_instellingen().get("venster_max"))[1] is True,
+          repr(kern.laad_instellingen().get("venster_max")))
+
+    # De tak die bij echt maximaliseren de schermgrootte zou teruggeven, is op
+    # 'offscreen' niet te zien: daar vergroot Qt het venster niet. Daarom een
+    # stand-in die wél doet alsof het venster het hele scherm vult. Zo kan de
+    # herstelgrootte toch getest worden.
+    class _Maxi:
+        """Doet alsof het venster gemaximeraliseerd en schermvullend is."""
+
+        def isMaximized(self) -> bool:
+            return True
+
+        def width(self) -> int:
+            return 3840
+
+        def height(self) -> int:
+            return 2160
+
+        def normalGeometry(self):
+            return type("R", (), {"width": lambda s: 1150, "height": lambda s: 800})()
+
+    check("gemaximeraliseerd onthoudt de herstelgrootte, niet het scherm",
+          top30_gui.Venster.onthoud_afmetingen(_Maxi()) ==
+          {"venster_breedte": 1150, "venster_hoogte": 800, "venster_max": True},
+          str(top30_gui.Venster.onthoud_afmetingen(_Maxi())))
+
+    # Het hele omhaalproces: sluiten moet de grootte wegschrijven, en een
+    # volgend venster moet hem weer terugkrijgen.
+    op_grootte.resize(1330, 905)
+    op_grootte.close()
+    bewaard = kern.laad_instellingen()
+    check("grootte wordt bij sluiten weggeschreven",
+          (bewaard.get("venster_breedte"), bewaard.get("venster_hoogte")) == (1330, 905),
+          f"{bewaard.get('venster_breedte')}x{bewaard.get('venster_hoogte')}")
+    opnieuw = top30_gui.Venster("donker")
+    check("volgend venster opent op die grootte",
+          (opnieuw.width(), opnieuw.height()) == (1330, 905),
+          f"{opnieuw.width()}x{opnieuw.height()}")
+
+    # `_bewaar(met_venster=False)` is er voor de velden: die mag de grootte
+    # van het venster niet vastleggen, want die is dan niet veranderd.
+    op_grootte.resize(1000, 700)
+    op_grootte._bewaar(met_venster=False)
+    check("veldwijziging legt de venstergrootte niet vast",
+          (kern.laad_instellingen().get("venster_breedte"),
+           kern.laad_instellingen().get("venster_hoogte")) == (1330, 905),
+          f"{kern.laad_instellingen().get('venster_breedte')}"
+          f"x{kern.laad_instellingen().get('venster_hoogte')}")
+
+    # Het thema werd alleen teruggelezen en nooit opgeslagen.
+    op_grootte.thema_naam = "licht"
+    op_grootte._bewaar(met_venster=False)
+    check("thema wordt nu bewaard", kern.laad_instellingen().get("thema") == "licht",
+          repr(kern.laad_instellingen().get("thema")))
+    op_grootte.thema_naam = "donker"
+
+    # De instellingen mogen elkaar niet weggooien: `_bewaar` herschrijft het
+    # hele bestand, dus sleutels die het niet kent zouden verdwijnen.
+    kern.bewaar_instellingen(Path("/x"), Path("/y"), "firefox",
+                             extra={"venster_breedte": 1, "iets_ anders": True})
+    kern.bewaar_instellingen(Path("/x"), Path("/y"), "firefox")
+    over = kern.laad_instellingen()
+    check("onbekende sleutels blijven staan", over.get("iets_ anders") is True,
+          str(over.get("iets_ anders")))
+    check("bekende sleutels worden wel bijgewerkt",
+          (over.get("work_dir"), over.get("cookie_browser")) == ("/x", "firefox"),
+          f"{over.get('work_dir')} {over.get('cookie_browser')}")
+    check("mp3_map volgt de werkmap", over.get("mp3_folder") == "/x/mp3",
+          str(over.get("mp3_folder")))
+    for v in (op_grootte, te_klein, kapot, opnieuw):
+        v.close()
+
     # Thema wisselen
     venster.knop_thema.setChecked(True)
     check("licht thema", venster.thema_naam == "licht")

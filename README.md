@@ -27,6 +27,8 @@ Deze handleiding bestaat uit twee delen:
 * [Gebruiken](#gebruiken)
   * [Starten](#starten)
   * [Instellingen](#instellingen)
+    * [De venstergrootte](#de-venstergrootte)
+    * [Het thema](#het-thema)
   * [Taak](#taak)
   * [Opties](#opties)
   * [Console en voortgang](#console-en-voortgang)
@@ -721,6 +723,37 @@ Je instellingen staan in een map `Top30` in je gebruikersmap:
 
 Wil je helemaal opnieuw beginnen met standaardwaarden, verwijder dat bestand
 dan; het programma maakt het opnieuw aan.
+
+#### De venstergrootte
+
+Het venster onthoudt hoe groot je het hebt gemaakt. Je hoeft het niet elke
+keer opnieuw op maat te slepen: de grootte wordt bewaard als je het venster
+afsluit, en de volgende keer opent het op die grootte.
+
+Dit werkt ook als je het venster gemaximeraliseerd hebt gehad. Dan onthoudt
+het programma de grootte die je had vóór het maximaliseren, zodat je niet de
+volgende keer ineens een gigantisch venster op je scherm hebt staan.
+
+De allereerste keer dat je een nieuwe versie start, is de oude grootte nog
+niet bekend: die wordt pas bewaard als je het venster die ene keer sluit.
+Daarna gaat het vanzelf.
+
+Wil je de venstergrootte eenmalig op een andere waarde zetten, dan kan dat
+gewoon door de twee regels hieronder in `settings.json` te zetten of te
+veranderen:
+
+```json
+ "venster_breedte": 1200,
+ "venster_hoogte": 800
+```
+
+Getallen moeten het zijn, en mogen niet kleiner zijn dan 940 bij 660. Staat er
+iets anders — een woord, `null`, of helemaal niets — dan negeert het programma
+dat en pakt het de normale grootte, in plaats van te klagen.
+
+#### Het thema
+
+Of je het donkere of het lichte thema gebruikt, wordt ook onthouden.
 
 ### De muziekmap
 

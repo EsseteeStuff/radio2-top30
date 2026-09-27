@@ -96,6 +96,20 @@ LICHT = {
 KLEUREN = {"donker": DONKER, "licht": LICHT}
 
 
+def _als_getal(waarde: object) -> int:
+    """Een getal uit de instellingen, of 0 als het er geen is.
+
+    De settings.json is met de hand te wijzigen, dus hier kan van alles in
+    staan: een getal, een tekst, `null`, of helemaal niets. Vandaar de
+    omzettiging in plaats van `int(...)` dat om een exception zou vragen.
+    """
+    try:
+        getal = int(waarde)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+    return getal if getal > 0 else 0
+
+
 def stijlblad(kleuren: dict) -> str:
     """Bouw het stylesheet op uit het kleurenpalet."""
     return f"""
@@ -549,7 +563,7 @@ class TaakThread(QThread):
 class Venster(QMainWindow):
     """Hoofdvenster met instellingen, taakkeuze, console en knoppen."""
 
-    def __init__(self, thema: str = "donker"):
+    def __init__(self, thema: str = "donker", afmetingen: dict | None = None):
         super().__init__()
         self.setWindowTitle(APP_TITEL)
         self.setMinimumSize(940, 660)
@@ -560,13 +574,23 @@ class Venster(QMainWindow):
         self.thema_naam = thema
         self.thread: TaakThread | None = None
         self._voortgang_boek: VoortgangsBoek | None = None
+        # De grootte die de gebruiker had bij het vorige afsluiten. Toegepast
+        # wordt die in _pas_afmetingen_toe(), na _bouw().
+        self._afmetingen = dict(afmetingen or {})
 
         instellingen = kern.laad_instellingen()
+        if not self._afmetingen:
+            self._afmetingen = {
+                "venster_breedte": instellingen.get("venster_breedte"),
+                "venster_hoogte": instellingen.get("venster_hoogte"),
+                "venster_max": instellingen.get("venster_max"),
+            }
         self._werk = Path(instellingen.get("work_dir") or kern.standaard_werkmap())
         self._muziek = Path(instellingen.get("final_folder") or kern.standaard_muziekmap())
         self._cookie_browser = instellingen.get("cookie_browser") or kern.COOKIE_STANDAARD
 
         self._bouw()
+        self._pas_afmetingen_toe()
         self._pas_stijl_toe()
         self._sneltoetsen()
         self._toon_samenvatting()
@@ -574,6 +598,47 @@ class Venster(QMainWindow):
             f"{APP_NAAM} klaar. Kies een taak en druk op Start.\n"
             f"Werkmap: {self._werk}\nMuziekmap: {self._muziek}"
         )
+
+    # --------------------------------------------------------------- afmetingen
+
+    def _pas_afmetingen_toe(self) -> None:
+        """Zet het venster op de grootte van de vorige keer.
+
+        Kleiner dan het minimum mag niet, want dan knipt Qt het venster af.
+        Onzin (0, negatief, of iets dat geen getal is) wordt genegeerd.
+        """
+        kleinste = self.minimumSize()
+        breedte = _als_getal(self._afmetingen.get("venster_breedte"))
+        hoogte = _als_getal(self._afmetingen.get("venster_hoogte"))
+        if breedte:
+            breedte = max(breedte, kleinste.width())
+        if hoogte:
+            hoogte = max(hoogte, kleinste.height())
+        if breedte or hoogte:
+            self.resize(breedte or self.width(), hoogte or self.height())
+        if self._afmetingen.get("venster_max"):
+            # Nog niet zichtbaar; setWindowState werkt dan en wordt bij show()
+            # toegepast. showMaximized() zou in dit stadium niets doen.
+            self.setWindowState(self.windowState() | Qt.WindowState.WindowMaximized)
+
+    def onthoud_afmetingen(self) -> dict:
+        """De huidige venstergrootte, in de vorm van instellingen.
+
+        Staat het venster gemaximimaliseerd, dan is `width()`/`height()` de
+        hele scherm. Dan is `normalGeometry()` interessanter: dat is de
+        grootte die je terugkrijgt zodra je het venster uit maximaliseren
+        haalt, en die wil je onthouden in plaats van het hele scherm.
+        """
+        if self.isMaximized():
+            rect = self.normalGeometry()
+            breedte, hoogte = rect.width(), rect.height()
+        else:
+            breedte, hoogte = self.width(), self.height()
+        return {
+            "venster_breedte": breedte,
+            "venster_hoogte": hoogte,
+            "venster_max": self.isMaximized(),
+        }
 
     # ---------------------------------------------------------------- opbouw
     def _bouw(self) -> None:
@@ -954,13 +1019,26 @@ class Venster(QMainWindow):
     def _na_wijziging(self) -> None:
         self._werk = Path(self.veld_werk.text().strip() or kern.standaard_werkmap())
         self._muziek = Path(self.veld_muziek.text().strip() or kern.standaard_muziekmap())
-        self._bewaar()
+        self._bewaar(met_venster=False)
         self._toon_samenvatting()
 
-    def _bewaar(self) -> None:
+    def _bewaar(self, met_venster: bool = True) -> None:
+        """Instellingen wegschrijven.
+
+        Het thema gaat altijd mee. De venstergrootte alleen als `met_venster`:
+        `_na_wijziging()` roept dit ook aan bij het typen in een veld, en dan is
+        de grootte van het venster toevallig veranderd. Bij het afsluiten wil je
+        die juist wél onthouden, en dat is wat `closeEvent` vraagt.
+        """
+        extra = {"thema": self.thema_naam}
+        if met_venster:
+            extra.update(self.onthoud_afmetingen())
         try:
             kern.bewaar_instellingen(
-                self._werk, self._muziek, self.combo_cookie.currentText()
+                self._werk,
+                self._muziek,
+                self.combo_cookie.currentText(),
+                extra=extra,
             )
         except OSError as fout:
             self.log(f"⚠ Instellingen konden niet bewaard worden: {fout}")
@@ -1151,7 +1229,9 @@ class Venster(QMainWindow):
                 return
             self.thread.requestInterruption()
             self.thread.wait(15000)
-        self._bewaar()
+        # Hier ook de venstergrootte onthouden, zodat de volgende keer het
+        # venster zo groot opent als de gebruiker het nu heeft gemaakt.
+        self._bewaar(met_venster=True)
         event.accept()
 
 

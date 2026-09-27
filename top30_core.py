@@ -154,22 +154,29 @@ def laad_instellingen() -> dict:
     return {}
 
 
-def bewaar_instellingen(werk: Path, muziek: Path, cookie_browser: str) -> None:
+def bewaar_instellingen(werk: Path, muziek: Path, cookie_browser: str,
+                        extra: dict | None = None) -> None:
+    """Sla de instellingen op, met de sleutels uit `extra` erbij.
+
+    Bestaande sleutels die hier niet genoemd worden blijven staan, zodat er
+    later dingen bij kunnen (zoals de venstergrootte) zonder dat het
+    overschrijven van de paden ze per ongeluk weghaalt.
+    """
     map_ = config_map()
     map_.mkdir(parents=True, exist_ok=True)
-    (map_ / "settings.json").write_text(
-        json.dumps(
-            {
-                "work_dir": str(werk),
-                "mp3_folder": str(Path(werk) / "mp3"),
-                "mp4_folder": str(Path(werk) / "mp4"),
-                "final_folder": str(muziek),
-                "cookie_browser": cookie_browser,
-            },
-            indent=1,
-        ),
-        encoding="utf-8",
+    gegevens = dict(laad_instellingen())
+    gegevens.update(
+        {
+            "work_dir": str(werk),
+            "mp3_folder": str(Path(werk) / "mp3"),
+            "mp4_folder": str(Path(werk) / "mp4"),
+            "final_folder": str(muziek),
+            "cookie_browser": cookie_browser,
+        }
     )
+    if extra:
+        gegevens.update({k: v for k, v in extra.items() if v is not None})
+    (map_ / "settings.json").write_text(json.dumps(gegevens, indent=1), encoding="utf-8")
 
 
 def paden_uit_instellingen() -> Paden:
