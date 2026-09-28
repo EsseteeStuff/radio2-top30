@@ -24,6 +24,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
@@ -40,6 +41,21 @@ GENRE = "Pop"
 ALBUM = "Oldies but Goldies"
 OMSCHRIJVING = "Oldies but goldies {jaar}"
 PREFIX_BREEDTE_MIN = 2
+PREFIX_LAGEN = 6  # max. aantal nummerlagen dat uit één naam wordt gehaald
+
+# Een YouTube-video-id is altijd precies 11 tekens. Zo'n id dat aan een titel
+# vastzit komt in de muziekmap terecht wanneer een bestand ooit met het id is
+# hernoemd om het uniek te maken. Zomaar weghalen is gevaarlijk: `Bat-Te-Ring-Ram`
+# en `D-I-V-O-R-C-E` zijn echte titels die er ook aan voldoen. Daarom wordt er
+# alleen een id afgehaald als de hitlijst bewijst dat het een id is; kijk daarvoor
+# in `match_hitlijst()`.
+YOUTUBE_ID = re.compile(r"-[A-Za-z0-9_-]{11}\s*$")
+# 'onbekende titel' is de plekhouder die het programma zet als het de titel van
+# een YouTube-video niet kon achterhalen. Die staat nooit in een echte titel.
+ONBEKENDE_TITEL = re.compile(r"\s*-\s*onbekende titel\s*$", re.IGNORECASE)
+# Bij het gokken op een insluiting moet er genoeg tekst overblijven om het
+# zeker te weten dat je het juiste nummer te pakken hebt.
+INSLUITING_MIN = 10
 
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
@@ -136,12 +152,63 @@ class Paden:
         return self
 
 
+# Alles wat het programma wegschrijft komt in een map met deze naam te staan.
+# Zo raakt het nooit een map aan die een ander programma beheert.
+EIGEN_MAP = "Top30"
+
+
 def standaard_werkmap() -> Path:
-    return Path.home() / "temp" / "Top30"
+    """De werkmap als er nog geen instelling is.
+
+    Een plek die het programma zelf toebehoort, in de gegevensmap van het
+    systeem. Niet in `temp`: daar mag een besturingssysteem zomaar wissen.
+    """
+    try:
+        from PySide6.QtCore import QStandardPaths
+
+        basis = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.GenericDataLocation
+        )
+        if basis:
+            return Path(basis) / EIGEN_MAP
+    except Exception:
+        pass
+    if sys.platform == "win32":
+        basis = Path(os.environ.get("LOCALAPPDATA")
+                     or Path.home() / "AppData" / "Local")
+    elif sys.platform == "darwin":
+        basis = Path.home() / "Library" / "Application Support"
+    else:
+        basis = Path(os.environ.get("XDG_DATA_HOME")
+                     or Path.home() / ".local" / "share")
+    return basis / EIGEN_MAP
 
 
 def standaard_muziekmap() -> Path:
-    return Path.home() / "Muziek" / "MijnMuziek"
+    """De muziekmap als er nog geen instelling is.
+
+    Bewust een eigen map in de standaard muziekmap van het systeem, en nadrukkelijk
+    geen bestaande verzameling: valt het programma hier terug, dan herschudt en
+    hernoemt het alleen zijn eigen bestanden en niet die van iemand anders.
+
+    De muziekmap van het systeem verschilt per besturingssysteem en per taal
+    (`~/Music`, `~/Muziek`, `C:\\Users\\...\\Music`), dus die laten we Qt bepalen.
+    """
+    try:
+        from PySide6.QtCore import QStandardPaths
+
+        basis = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.MusicLocation
+        )
+        if basis:
+            return Path(basis) / EIGEN_MAP
+    except Exception:
+        pass
+    if sys.platform == "win32":
+        basis = Path(os.environ.get("USERPROFILE") or Path.home()) / "Music"
+    else:
+        basis = Path.home() / "Music"
+    return basis / EIGEN_MAP
 
 
 def laad_instellingen() -> dict:
@@ -336,6 +403,27 @@ def vergelijk_sleutel(*delen: str) -> str:
     return re.sub(r"[\s\-–—_]+", " ", tekst.casefold()).strip()
 
 
+# Gebogen leestekens (`You’re`) en rechte (`You're`) zijn dezelfde apostrof, maar
+# een programma dat ze vergelijkt op bytes ziet ze als twee woorden. Hetzelfde
+# geldt voor accenten: `Besame` en `Bésame` zijn hetzelfde nummer. Vooral de
+# hitlijst en de bestandsnaam gebruiken ze allebei, dus voor het terugzoeken van
+# de juiste titel maken we ze gelijk. Let op: de naam die uit de hitlijst komt
+# houdt zijn accenten, alleen de vergelijking negeert ze.
+GEBOGEN_LEESTEKENS = str.maketrans({
+    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u02bc": "'", "\u00b4": "'",
+    "\u201c": '"', "\u201d": '"', "\uff02": '"',
+})
+
+
+def titel_sleutel(*delen: str) -> str:
+    """Zoals `vergelijk_sleutel()`, maar leestekens en accenten gelijkstelt."""
+    def kaal(tekst: str) -> str:
+        tekst = tekst.translate(GEBOGEN_LEESTEKENS)
+        return "".join(t for t in unicodedata.normalize("NFKD", tekst)
+                       if not unicodedata.combining(t))
+    return vergelijk_sleutel(*(kaal(d) for d in delen))
+
+
 def _tags_van(pad: Path) -> list[tuple[str, str]]:
     """Lees artiest en titel uit de ID3-tags; lege lijst als er geen zijn."""
     try:
@@ -414,10 +502,35 @@ def filter_bestaande(ctx: Context, hits: list[dict],
     return te_downloaden, overgeslagen
 
 
+def is_mp3(pad: Path) -> bool:
+    """Is dit bestand een mp3? Ook als er geen of een rare extensie aan hangt.
+
+    De extensie alleen is niet te vertrouwen: `Mr. Soft` en `B.T. Express`
+    lijken op een extensie te eindigen, en duizenden bestanden in een muziekmap
+    blijven soms helemaal zonder. Daarom geldt een bestand als mp3 zodra het
+    `ID3` of een MPEG-framesynchronisatie (`0xFF 0xEx`) begint. Daarmee raakt
+    het programma een afbeelding of een m3u-bestand niet aan.
+    """
+    if pad.suffix.lower() == ".mp3":
+        return True
+    try:
+        with open(pad, "rb") as fh:
+            kop = fh.read(4)
+    except OSError:
+        return False
+    # Een ID3-tag is 'ID3' plus een versiebyte (2, 3 of 4). Die versiebyte
+    # meechecken voorkomt dat een tekstbestand dat toevallig met 'ID3' begint
+    # voor een mp3 wordt aangezien.
+    if kop[:3] == b"ID3" and len(kop) == 4 and kop[3] in (2, 3, 4):
+        return True
+    return len(kop) >= 3 and kop[0] == 0xFF and kop[1] & 0xE0 == 0xE0
+
+
 def mp3_bestanden(map_: Path) -> list[Path]:
+    """Alle mp3's in een map, ook bestanden waarvan de extensie ontbreekt."""
     if not map_.is_dir():
         return []
-    return sorted(p for p in map_.iterdir() if p.is_file() and p.suffix.lower() == ".mp3")
+    return sorted(p for p in map_.iterdir() if p.is_file() and is_mp3(p))
 
 
 def mp4_bestanden(map_: Path) -> list[Path]:
@@ -453,7 +566,174 @@ def unieke_naam(map_: Path, naam: str) -> Path:
 
 
 def zonder_prefix(naam: str) -> str:
-    return re.sub(r"^\d{1,9}-", "", naam)
+    """Haal alle nummering aan het begin van een bestandsnaam weg.
+
+    Niet één laag, maar zoveel lagen er in de naam zitten, en met of zonder
+    spatie rond het streepje:
+
+    ================================  =========================
+    naam                             zonder_prefix
+    ================================  =========================
+    `00012-ABBA - x.mp3`             `ABBA - x.mp3`
+    `0423 - ABBA - x.mp3`            `ABBA - x.mp3`
+    `001-0423 - ABBA - x.mp3`        `ABBA - x.mp3`
+    `00001-00042-0007-ABBA - x.mp3`  `ABBA - x.mp3`
+    ================================  =========================
+
+    Een titel die met cijfers begint blijft heel, want er moet een streepje
+    achter die cijfers staan: `10cc - Donna` en `3 Doors Down - Here Without
+    You` blijven dus precies zoals ze zijn.
+    """
+    for _ in range(PREFIX_LAGEN):
+        korter = re.sub(r"^\d{1,9}\s*-\s*", "", naam, count=1).lstrip("- ")
+        if not korter or korter == naam:
+            break
+        naam = korter
+    return naam
+
+
+def zonder_mp3(naam: str) -> str:
+    """Haal de mp3-extensie van een bestandsnaam af, als hij er echt is.
+
+    `Alice Cooper - No More Mr. Nice Guy` heeft geen extensie, maar `Path` zou
+    er `. Nice Guy` van maken. Daarom kijken we naar het hele einde van de naam
+    in plaats van naar de laatste punt.
+    """
+    return naam[:-4] if naam.casefold().endswith(".mp3") else naam
+
+
+def naamvarianten(naam: str) -> list[str]:
+    """Voorstellen voor dezelfde titel, steeds verder opgeruimd.
+
+    Geeft de naam zelf terug, dan de naam zonder 'onbekende titel', dan zonder
+    een YouTube-id aan het eind, enzovoort, tot de naam niet meer verder
+    opgeruimd kan worden. De eerste variant die precies in de hitlijst staat is
+    de juiste; de rest wordt alleen gebruikt als er verder niets klopt.
+    """
+    naam = zonder_mp3(naam.strip())
+    varianten: list[str] = []
+    vorige = ""
+    while naam and naam != vorige:
+        varianten.append(naam)
+        vorige = naam
+        naam = ONBEKENDE_TITEL.sub("", naam)
+        naam = YOUTUBE_ID.sub("", naam).rstrip(" -_")
+    return varianten
+
+
+def hitlijst_tabel(paden: Paden) -> dict[str, dict]:
+    """Alle nummers uit de hits-bestanden van de werkmap, op sleutel.
+
+    De hitlijst is de enige bron die zegt hoe een nummer hoort te heten, en dus
+    de enige die het waag is een rommelige bestandsnaam te vervangen. De sleutel
+    is die van `titel_sleutel()`, zodat hoofdletters, streepjes, leestekens en
+    accenten niet uitmaken. Geeft een lege dictie terug als er geen hits-bestanden
+    liggen; het programma hoeft dan alleen te nummeren.
+    """
+    tabel: dict[str, dict] = {}
+    for pad in sorted(paden.werk.glob("hits_*_*.json")):
+        try:
+            regels = json.loads(pad.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for regel in regels if isinstance(regels, list) else []:
+            if isinstance(regel, dict) and regel.get("artiest") and regel.get("titel"):
+                tabel.setdefault(
+                    titel_sleutel(regel["artiest"], regel["titel"]),
+                    {"artiest": regel["artiest"], "titel": regel["titel"]},
+                )
+    for pad in sorted(paden.werk.glob("hits_*_*.txt")):
+        try:
+            inhoud = pad.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for regel in inhoud.splitlines():
+            if not regel.strip():
+                continue
+            try:
+                hit = uit_regel(regel)
+            except (ValueError, TypeError):
+                continue
+            if hit["artiest"] and hit["titel"]:
+                tabel.setdefault(
+                    titel_sleutel(hit["artiest"], hit["titel"]),
+                    {"artiest": hit["artiest"], "titel": hit["titel"]},
+                )
+    return tabel
+
+
+def _kandidaten_sleutels(pad: Path) -> list[str]:
+    """Alle manieren waarop dit bestand naar een titel genoemd kan worden."""
+    bronnen = [zonder_mp3(zonder_prefix(pad.name))]
+    for artiest, titel in _tags_van(pad):
+        if titel:
+            bronnen.append(titel)
+        if artiest and not titel:
+            bronnen.append(artiest)
+    sleutels: list[str] = []
+    for bron in bronnen:
+        for variant in naamvarianten(bron):
+            kunstenaar, _, titel = variant.partition(" - ")
+            if kunstenaar and titel:
+                sleutels.append(titel_sleutel(kunstenaar, titel))
+            sleutels.append(titel_sleutel(variant))
+    return sleutels
+
+
+def match_hitlijst(pad: Path, tabel: dict[str, dict],
+                   sleutels: list[str] | None = None) -> tuple[str, dict] | None:
+    """Zoek in de hitlijst welk nummer dit bestand hoort te zijn.
+
+    Geeft (soort, nummer) terug, of None als de hitlijst het niet weet. Er wordt
+    nooit een naam verzonnen: gevonden betekent dat er écht zo'n nummer in de
+    hitlijst staat, dus dat de naam ernaar mag worden bijgewerkt.
+
+    Eerst wordt er exact gekeken, en pas als dat niks oplevert wordt er gekeken
+    of het ene nummer in het andere voorkomt. Dat tweede is nodig omdat de
+    bestandsnaam vaak nog wat YouTube-gehak aan de titel plakt: `Sing a Song
+    (Official Audio)`. Dat mag alleen als er precies één nummer in de lijst
+    overblijft, anders zou het een gok zijn.
+    """
+    if not tabel:
+        return None
+    kandidaten = _kandidaten_sleutels(pad)
+    for kandidaat in kandidaten:
+        nummer = tabel.get(kandidaat)
+        if nummer is not None:
+            return "exact", nummer
+
+    if sleutels is None:
+        sleutels = list(tabel)
+    for kandidaat in kandidaten:
+        if len(kandidaat) < INSLUITING_MIN:
+            continue
+        treffers = {
+            tabel[s]["artiest"] + " - " + tabel[s]["titel"]
+            for s in sleutels
+            if (len(s) >= INSLUITING_MIN and s in kandidaat) or kandidaat in s
+        }
+        if len(treffers) == 1:
+            naam = treffers.pop().split(" - ", 1)
+            return "insluiting", {"artiest": naam[0], "titel": naam[1]}
+    return None
+
+
+def schone_stam(pad: Path, tabel: dict[str, dict],
+                sleutels: list[str] | None = None) -> str:
+    """De naam die dit bestand hoort te krijgen, zonder prefix en zonder `.mp3`.
+
+    Is de titel in de hitlijst te vinden, dan wint die altijd: zo verdwijnen
+    YouTube-ids, kapotte tekens en een fout omgekeerde artiest-titel. Anders
+    blijft de bestandsnaam zoals hij is, op de prefix na. In beide gevallen
+    verdwijnt een eventuele mp3-extensie, die wordt er door de nummering weer
+    aan gehangen.
+    """
+    if tabel:
+        gevonden = match_hitlijst(pad, tabel, sleutels)
+        if gevonden is not None:
+            _, nummer = gevonden
+            return schoon(f"{nummer['artiest']} - {nummer['titel']}")
+    return schoon(zonder_mp3(zonder_prefix(pad.name)))
 
 
 # --------------------------------------------------------------------------
@@ -1013,7 +1293,9 @@ def _ruim_mp4_op(ctx: Context) -> int:
     """Verwijder mp4's waarvan het mp3-bestand al klaarstaat."""
     klaar = {p.stem for p in mp3_bestanden(ctx.paden.mp3)}
     for p in mp3_bestanden(ctx.paden.muziek):
-        klaar.add(zonder_prefix(p.name)[:-len(Path(p.name).suffix)])
+        # p.stem, niet de hele naam: bij een bestand zonder extensie zou
+        # het afknippen van de suffix een lege string opleveren.
+        klaar.add(zonder_prefix(p.stem))
     verwijderd = 0
     for pad in mp4_bestanden(ctx.paden.mp4):
         if pad.stem in klaar:
@@ -1155,32 +1437,91 @@ def verwerk_nummerplan(ctx: Context, map_: Path, plan: list[tuple[Path, Path]]) 
     return len(doers)
 
 
-def fixprefix(ctx: Context) -> int:
-    """Zet alle prefixen op de breedte die bij het aantal bestanden hoort.
+def _log_naamherstel(ctx: Context, bestanden: list[Path],
+                     stam_per_pad: dict[Path, str], tabel: dict[str, dict]) -> None:
+    """Vertel welke namen de hitlijst heeft hersteld, zodat het te controleren is."""
+    if not tabel:
+        ctx.log(
+            "Geen hits-bestanden in de werkmap gevonden, dus ik kan de titels "
+            "niet controleren. Ik haal de prefixen weg en zet overal .mp3 achter."
+        )
+        return
+    hersteld = [
+        (oud, stam_per_pad[pad])
+        for oud, pad in ((schoon(zonder_mp3(zonder_prefix(p.name))), p) for p in bestanden)
+        if oud and vergelijk_sleutel(oud) != vergelijk_sleutel(stam_per_pad[pad])
+    ]
+    if not hersteld:
+        ctx.log(f"Alle {len(bestanden)} namen kloppen al met de hitlijst.")
+        return
+    ctx.log(
+        f"{len(hersteld)} van de {len(bestanden)} namen klopten niet met de "
+        f"hitlijst en zijn hersteld:"
+    )
+    for oud, nieuw in hersteld:
+        ctx.log(f"  {oud}  ->  {nieuw}")
 
-    Voor 700 bestanden wordt dat bijvoorbeeld 001- in plaats van 00001-.
+
+def fixprefix(ctx: Context) -> int:
+    """Herstel de nummering van de hele muziekmap.
+
+    Eerst wordt het aantal bestanden geteld om de breedte van de prefix te
+    bepalen (700 bestanden wordt bijvoorbeeld 3 cijfers: 001- in plaats van
+    00001-). Daarna worden de namen opgeschoond: wat in de hitlijst staat krijgt
+    de naam uit die lijst, zodat YouTube-ids, een fout omgekeerde artiest-titel
+    en een ontbrekende extensie verdwijnen. Vervolgens gaan alle prefixen eraf,
+    wordt de lijst geschud, en krijgt elk bestand van 1 tot en met het aantal
+    een nieuwe prefix, oplopend van voren naar achteren.
     """
     map_ = ctx.paden.muziek
+    ctx.check()
     if not map_.is_dir():
         raise Fout(f"{map_} bestaat niet.")
-    aantal = len(mp3_bestanden(map_))
+    bestanden = mp3_bestanden(map_)
+    if not bestanden:
+        ctx.log(f"Geen mp3-bestanden gevonden in {map_}.")
+        return 0
+
+    aantal = len(bestanden)
     breedte = prefix_breedte(aantal)
-    hernoemd = 0
-    for pad in sorted(map_.iterdir()):
+    volgorde = _schud_zonder_twee_keer_zelfde_artiest(bestanden)
+    ctx.zet_voortgang("hernoemen", 0, aantal, "namen opruimen")
+
+    # De namen worden eerst opgeschoond, nog zonder prefix. Zo kan er geen
+    # dubbele naam ontstaan doordat twee bestanden na het hernoemen pas blijken
+    # hetzelfde te heten: het nummer komt er in één keer bij.
+    tabel = hitlijst_tabel(ctx.paden)
+    sleutels = list(tabel)
+    stam_per_pad: dict[Path, str] = {}
+    for i, pad in enumerate(volgorde, 1):
         ctx.check()
-        if not pad.is_file():
-            continue
-        m = re.match(r"^(\d{1,9})-(.+)", pad.name)
-        if not m:
-            continue
-        nieuw = f"{int(m.group(1)):0{breedte}d}-{m.group(2).lstrip('-')}"
-        if nieuw == pad.name or pad.with_name(nieuw).exists():
-            continue
-        pad.rename(pad.with_name(nieuw))
-        hernoemd += 1
+        ctx.zet_voortgang("hernoemen", i, aantal, "namen opruimen")
+        stam_per_pad[pad] = schone_stam(pad, tabel, sleutels)
+    _log_naamherstel(ctx, volgorde, stam_per_pad, tabel)
+
+    # Oude prefixen weg, daarna een oplopende nummering in de geschudde volgorde.
+    # Alleen bestanden die NIET hernoemd worden komen in `bezet`: elk mp3 in
+    # deze map krijgt immers een nieuwe naam, en die is dus straks vrij. Zo kan
+    # een nieuwe naam nooit een plaatje of tekstbestand overschrijven.
+    plan: list[tuple[Path, Path]] = []
+    bezet = {p.name.casefold() for p in map_.iterdir()
+             if p.is_file() and not is_mp3(p)}
+    for i, pad in enumerate(volgorde, 1):
+        ctx.check()
+        stam = stam_per_pad[pad]
+        naam = f"{i:0{breedte}d}-{stam}.mp3"
+        n = 2
+        while naam.casefold() in bezet:
+            naam = f"{i:0{breedte}d}-{stam} ({n}).mp3"
+            n += 1
+        bezet.add(naam.casefold())
+        plan.append((pad, pad.with_name(naam)))
+
+    hernoemd = verwerk_nummerplan(ctx, map_, plan)
     ctx.log(
-        f"{hernoemd} van {aantal} bestanden in {map_} naar een "
-        f"{breedte}-cijferige prefix gezet."
+        f"{hernoemd} van {aantal} bestanden in {map_} opnieuw genummerd "
+        f"naar een oplopende {breedte}-cijferige prefix "
+        f"({1:0{breedte}d}- t/m {aantal:0{breedte}d}-)."
     )
     return hernoemd
 

@@ -57,6 +57,28 @@ def test_kern() -> None:
     check("bestandsnaam inkorten", len(kern.schoon("x" * 300)) == 120)
     check("lege naam wordt 'naamloos'", kern.schoon("   ..  ") == "naamloos")
 
+    # De terugvalmap mag nooit een bestaande verzameling zijn. Valt het
+    # programma terug (settings.json weg of kapot), dan herschudt en hernoemt
+    # het álle mp3's in die map. Daarom een eigen map erin.
+    terugval = kern.standaard_muziekmap()
+    check("terugvalmap is een map van dit programma",
+          terugval.name == kern.EIGEN_MAP, str(terugval))
+    check("terugvalmap is absoluut", terugval.is_absolute(), str(terugval))
+    # De muziekmap van het systeem heet per taal en per systeem anders
+    # (~/Music, ~/Muziek, My Music, ...), dus controleer de mapnaam niet.
+    check("terugvalmap ligt in een map en niet in je thuismap",
+          terugval.parent not in (Path.home(), Path("/"), Path.home()),
+          str(terugval))
+
+    # De werkmap mag niet in temp staan: een besturingssysteem mag die wissen,
+    # en dan staan je hitlijsten er niet meer.
+    werkterugval = kern.standaard_werkmap()
+    check("werkmap is een map van dit programma",
+          werkterugval.name == kern.EIGEN_MAP, str(werkterugval))
+    check("werkmap staat niet in een tijdelijke map",
+          not werkterugval.is_relative_to(Path(tempfile.gettempdir())),
+          str(werkterugval))
+
     # Prefixbreedte volgt het aantal bestanden
     for aantal, verwacht in ((0, 2), (5, 2), (9, 2), (40, 2), (99, 2), (100, 3),
                              (700, 3), (999, 3), (1000, 4), (1200, 4), (10000, 5)):
@@ -73,6 +95,37 @@ def test_kern() -> None:
     check("het hoogste nummer past altijd in de prefix", not te_kort, str(te_kort[:5]))
     check("minimale breedte is 2", kern.PREFIX_BREEDTE_MIN == 2)
     check("prefix strippen", kern.zonder_prefix("00012-ABBA - x.mp3") == "ABBA - x.mp3")
+
+    # Een echte muziekmap bevat allemaal namen uit verschillende programma's.
+    # Alle nummerlagen moeten eraf, met en zonder spatie rond het streepje, of
+    # er blijft '0423 - ' in de titel plakken en komt de volgende prefix er
+    # weer voor: '001-0423 - x.mp3'.
+    for naam, verwacht in (
+        ("00012-ABBA - x.mp3", "ABBA - x.mp3"),
+        ("0423 - ABBA - x.mp3", "ABBA - x.mp3"),
+        ("423 -ABBA - x.mp3", "ABBA - x.mp3"),
+        ("001-0423 - ABBA - x.mp3", "ABBA - x.mp3"),
+        ("00001-00042-0007-ABBA - x.mp3", "ABBA - x.mp3"),
+        ("001--0423 - ABBA - x.mp3", "ABBA - x.mp3"),
+    ):
+        check(f"nummerlagen eraf: {naam}",
+              kern.zonder_prefix(naam) == verwacht, kern.zonder_prefix(naam))
+    # Maar een titel die met cijfers begint is géén nummering en blijft heel.
+    for naam, verwacht in (
+        ("10cc - Donna", "10cc - Donna"),
+        ("3 Doors Down - Here Without You", "3 Doors Down - Here Without You"),
+        ("5000 Volts - I'm on Fire", "5000 Volts - I'm on Fire"),
+        ("1970 - Suzanne.mp3", "Suzanne.mp3"),
+        ("ABBA - x.mp3", "ABBA - x.mp3"),
+    ):
+        check(f"cijfers in de titel blijven: {naam}",
+              kern.zonder_prefix(naam) == verwacht, kern.zonder_prefix(naam))
+    # De loop is begrensd en levert nooit een lege naam op: uit een naam die
+    # niks anders is dan nummers blijft de laatste '01-' over, niet ''.
+    check("begrensde lagen, nooit een lege naam",
+          kern.zonder_prefix("01-" * kern.PREFIX_LAGEN) == "01-"
+          and kern.zonder_prefix("01-" * 40) != "",
+          repr(kern.zonder_prefix("01-" * 40)))
 
     # Vergelijkingssleutel: hoofdletters, streepjes en spaties mogen niet uitmaken
     check("hoofdletters maken niet uit",
@@ -216,16 +269,245 @@ def test_kern() -> None:
           str(len(kern.mp3_bestanden(zwaar.muziek))))
     shutil.rmtree(schudmap, ignore_errors=True)
 
-    # Prefix herstellen: alle bestanden krijgen de breedte die bij het aantal past
+    # Prefix herstellen: eerst tellen, dan oude prefixen weg, dan schudden en
+    # oplopend nummeren. De nummers worden opnieuw uitgedeeld, dus de losse
+    # '7-' verdwijnt en het bestand krijgt een nummer uit 01 t/m het aantal.
     kort = paden.muziek / "7-Artist - Song.mp3"
     kort.write_bytes(b"\x00" * 50)
+    aantal_muziek = len(kern.mp3_bestanden(paden.muziek))
     kern.fixprefix(ctx)
-    check("losse prefix genormaliseerd",
-          (paden.muziek / "07-Artist - Song.mp3").exists(),
-          str(sorted(p.name for p in paden.muziek.iterdir())))
-    check("fixprefix houdt de oude 5-cijferige namen over",
+    hernoemde = sorted(p.name for p in kern.mp3_bestanden(paden.muziek))
+    check("fixprefix nummert alles van 01 tot en met het aantal",
+          [n.split("-", 1)[0] for n in hernoemde]
+          == [f"{i:0{kern.prefix_breedte(aantal_muziek)}d}" for i in range(1, aantal_muziek + 1)],
+          str(hernoemde))
+    check("fixprefix geeft alle bestanden dezelfde breedte",
+          all(len(n.split("-", 1)[0]) == kern.prefix_breedte(aantal_muziek)
+              for n in hernoemde),
+          str(hernoemde))
+    check("fixprefix haalt de oude 5-cijferige namen weg",
           not any(p.name.startswith("0000") for p in kern.mp3_bestanden(paden.muziek)),
           str(sorted(p.name for p in kern.mp3_bestanden(paden.muziek))))
+    check("fixprefix bewaart de bestandsnaam zonder prefix",
+          any(kern.zonder_prefix(n) == "Artist - Song.mp3" for n in hernoemde),
+          str(hernoemde))
+    check("fixprefix verwijdert niets",
+          len(hernoemde) == aantal_muziek, str(len(hernoemde)))
+
+    # Uit een echte muziekmap: bestanden zonder prefix, zonder extensie, of met
+    # een dubbel gestapelde prefix moeten allemaal een nummer krijgen.
+    rommelmap = Path(tempfile.mkdtemp(prefix="top30rommel-"))
+    rp = kern.Paden(rommelmap, rommelmap / "muziek").maak()
+    # Een echte ID3v2.3-kop, zodat het programma ze als mp3 herkent.
+    id3 = b"ID3\x03\x00\x00\x00\x00\x00\x10" + b"\x00" * 80
+    for naam in ("001-0423 - Vicky Leandros - Ich Liebe Das Leben",
+                 "10cc - Donna", "3 Doors Down - Here Without You",
+                 "Mr. Soft", "The Tymes - Ms. Grace"):
+        (rp.muziek / naam).write_bytes(id3)
+    # Geen mp3's, die moemen met rust gelaten worden.
+    (rp.muziek / "cover.jpg").write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 40)
+    (rp.muziek / "notities.txt").write_bytes(b"gewoon een tekstbestand\n")
+    # Een tekstbestand dat toevallig met 'ID3' begint is geen mp3: de
+    # versiebyte na 'ID3' moet 2, 3 of 4 zijn.
+    (rp.muziek / "lijst.txt").write_bytes(b"ID3 is hier toevallig tekst")
+    r_ctx = kern.Context(paden=rp, log=lambda *_: None)
+    check("mp3 zonder extensie wordt herkend",
+          len(kern.mp3_bestanden(rp.muziek)) == 5,
+          str(sorted(p.name for p in kern.mp3_bestanden(rp.muziek))))
+    check("afbeelding en tekst zijn geen mp3",
+          not any(p.suffix in (".jpg", ".txt") for p in kern.mp3_bestanden(rp.muziek)),
+          str(sorted(p.name for p in kern.mp3_bestanden(rp.muziek))))
+    kern.fixprefix(r_ctx)
+    nieuw = sorted(p.name for p in kern.mp3_bestanden(rp.muziek))
+    check("fixprefix nummert ook bestanden zonder prefix en zonder extensie",
+          len(nieuw) == 5
+          and [p[:2] for p in nieuw] == [f"{i:02d}" for i in range(1, 6)],
+          str(nieuw))
+    check("geen overbodige (2) bij bestanden die blijven staan",
+          not any("(2)" in p for p in nieuw), str(nieuw))
+    check("gestapelde prefix wordt helemaal verwijderd",
+          any(p == "01-Vicky Leandros - Ich Liebe Das Leben" or
+              p == "01-Vicky Leandros - Ich Liebe Das Leben (2)" or
+              p[3:].startswith("Vicky Leandros - Ich Liebe Das Leben")
+              for p in nieuw),
+          str(nieuw))
+    check("titel die met cijfers begint blijft heel",
+          any(p[3:] == "10cc - Donna.mp3" for p in nieuw), str(nieuw))
+    check("naam met punt erin blijft heel",
+          any(p[3:] == "Mr. Soft.mp3" for p in nieuw)
+          and any(p[3:] == "The Tymes - Ms. Grace.mp3" for p in nieuw), str(nieuw))
+    check("elk bestand krijgt een mp3-extensie",
+          all(p.endswith(".mp3") for p in nieuw), str(nieuw))
+    check("jpg en txt blijven ongemoeid",
+          (rp.muziek / "cover.jpg").exists()
+          and (rp.muziek / "notities.txt").exists(), str(nieuw))
+    shutil.rmtree(rommelmap, ignore_errors=True)
+
+    # De volgorde moet echt opnieuw geschudd worden, niet de oude nummering
+    # overhouden. Zes bestanden en 25 runs: het is praktisch onmogelijk dat de
+    # volgorde 25 keer exact hetzelfde blijft.
+    schudmap2 = Path(tempfile.mkdtemp(prefix="top30fix-"))
+    fixp = kern.Paden(schudmap2, schudmap2 / "muziek").maak()
+    for i in range(1, 7):
+        (fixp.muziek / f"{i}-Artiest {i} - Nummer {i}.mp3").write_bytes(b"x")
+    fix_ctx = kern.Context(paden=fixp, log=lambda *_: None)
+    volgordes = set()
+    for _ in range(25):
+        kern.fixprefix(fix_ctx)
+        volgordes.add(tuple(
+            kern.zonder_prefix(p.name)
+            for p in sorted(kern.mp3_bestanden(fixp.muziek),
+                            key=lambda p: int(p.name.split("-", 1)[0]))
+        ))
+    check("fixprefix schudt de volgorde, 25x",
+          len(volgordes) > 1, f"{len(volgordes)} verschillende volgordes")
+    check("fixprefix houdt alle bestanden bij elke run",
+          len(kern.mp3_bestanden(fixp.muziek)) == 6,
+          str(len(kern.mp3_bestanden(fixp.muziek))))
+    check("fixprefix nummert 6 bestanden van 01 tot 06",
+          sorted(int(p.name.split("-", 1)[0]) for p in kern.mp3_bestanden(fixp.muziek))
+          == list(range(1, 7)),
+          str(sorted(p.name for p in kern.mp3_bestanden(fixp.muziek))))
+    shutil.rmtree(schudmap2, ignore_errors=True)
+
+    # ---- Namen herstellen met de hitlijst ---------------------------------
+    # De hitlijst is de enige bron die weet hoe een nummer hoort te heten.
+    # Met een YouTube-id, een fout omgekeerde artiest-titel of rommel erbij moet
+    # de naam daarnaar terug; zonder treffer blijft de naam zoals hij is.
+    check("naamvarianten halen id en 'onbekende titel' eraf",
+          kern.naamvarianten("1976 Will Tura denk je nog wel eens aan mij"
+                             "-fQ444pTlkqc - onbekende titel.mp3")
+          == ["1976 Will Tura denk je nog wel eens aan mij-fQ444pTlkqc - onbekende titel",
+              "1976 Will Tura denk je nog wel eens aan mij"],
+          str(kern.naamvarianten("Will Tura - x-fQ444pTlkqc - onbekende titel.mp3")))
+    check("naamvarianten beginnen met de naam zelf",
+          kern.naamvarianten("Mouth & MacNeal - Bat-Te-Ring-Ram")[0]
+          == "Mouth & MacNeal - Bat-Te-Ring-Ram",
+          str(kern.naamvarianten("Mouth & MacNeal - Bat-Te-Ring-Ram")))
+    check("zonder_mp3 laat een punt in de naam met rust",
+          kern.zonder_mp3("Alice Cooper - No More Mr. Nice Guy")
+          == "Alice Cooper - No More Mr. Nice Guy"
+          and kern.zonder_mp3("a - b.MP3") == "a - b",
+          kern.zonder_mp3("Alice Cooper - No More Mr. Nice Guy"))
+
+    hmap = Path(tempfile.mkdtemp(prefix="top30hits-"))
+    hp = kern.Paden(hmap, hmap / "muziek").maak()
+    (hp.werk / "hits_1976_1976.txt").write_text(
+        "ABBA - Mamma Mia - 1976\n"
+        "Mouth & MacNeal - Bat-Te-Ring-Ram - 1973\n"
+        "Fats Domino - Blueberry Hill - 1976\n"
+        "Cindy - A La Bonne Heure - 1976\n"
+        "Ab - Cd - 1976\n",
+        encoding="utf-8")
+    tabel = kern.hitlijst_tabel(hp)
+    check("hitlijst wordt ingelezen uit de werkmap",
+          len(tabel) == 5 and kern.vergelijk_sleutel("ABBA", "Mamma Mia") in tabel,
+          f"{len(tabel)} sleutels: {sorted(tabel)}")
+    check("lege werkmap geeft een lege tabel",
+          kern.hitlijst_tabel(kern.Paden(hmap / "leeg", hmap / "leeg" / "muziek")) == {},
+          "niet leeg")
+
+    krabmap = hmap / "krab"
+    krabmap.mkdir()
+    (krabmap / "t.mp3").write_bytes(b"x")
+
+    def _match(naam: str):
+        pad = krabmap / "t.mp3"
+        pad.write_bytes(b"x")
+        pad.rename(krabmap / naam)
+        return kern.match_hitlijst(krabmap / naam, tabel)
+
+    check("youtube-id in de titel wordt hersteld",
+          _match("ABBA - Mamma Mia (Official Video)-unfzfe8f9NI.mp3")
+          == ("insluiting", {"artiest": "ABBA", "titel": "Mamma Mia"}),
+          str(_match("ABBA - Mamma Mia (Official Video)-unfzfe8f9NI.mp3")))
+    check("exacte match met hoofdletters verschil",
+          _match("abba - mamma mia.mp3")
+          == ("exact", {"artiest": "ABBA", "titel": "Mamma Mia"}),
+          str(_match("abba - mamma mia.mp3")))
+    check("echte titel die op een id lijkt blijft heel",
+          _match("Mouth & MacNeal - Bat-Te-Ring-Ram.mp3")
+          == ("exact", {"artiest": "Mouth & MacNeal", "titel": "Bat-Te-Ring-Ram"}),
+          str(_match("Mouth & MacNeal - Bat-Te-Ring-Ram.mp3")))
+    check("onbekend nummer wordt niet verzonnen",
+          _match("Iemand - Vanalles - xyz9") is None,
+          str(_match("Iemand - Vanalles - xyz9")))
+    check("titel van een paar letters geeft geen gok",
+          _match("Ab - Cd zingt het hardop op de radio - qqq9") is None,
+          str(_match("Ab - Cd zingt het hardop op de radio - qqq9")))
+    shutil.rmtree(krabmap, ignore_errors=True)
+
+    eenmalig = hmap / "eenmalig"
+    eenmalig.mkdir()
+    (eenmalig / "Fats Domino - Blueberry Hill.mp3").write_bytes(b"x")
+    check("schone_stam gebruikt de hitlijst",
+          kern.schone_stam(eenmalig / "Fats Domino - Blueberry Hill.mp3", tabel)
+          == "Fats Domino - Blueberry Hill", "anders")
+    (eenmalig / "Onbekend Artiest - Eigen Titel.mp3").write_bytes(b"x")
+    check("schone_stam laat een onbekende naam met rust",
+          kern.schone_stam(eenmalig / "Onbekend Artiest - Eigen Titel.mp3", tabel)
+          == "Onbekend Artiest - Eigen Titel", "anders")
+    (eenmalig / "081-0102 - Cindy - A La Bonne Heure - onbekende titel.mp3").write_bytes(b"x")
+    check("schone_stam haalt de prefix, het id-deel en de extensie eraf",
+          kern.schone_stam(eenmalig / "081-0102 - Cindy - A La Bonne Heure - onbekende titel.mp3", tabel)
+          == "Cindy - A La Bonne Heure",
+          kern.schone_stam(eenmalig / "081-0102 - Cindy - A La Bonne Heure - onbekende titel.mp3", tabel))
+    shutil.rmtree(eenmalig, ignore_errors=True)
+
+    # En nu een hele muziekmap met een hits-bestand ernaast. De bestanden zonder
+    # extensie krijgen een echte ID3-kop, anders zijn het geen mp3's.
+    id3 = b"ID3\x03\x00\x00\x00\x00\x00\x10" + b"\x00" * 80
+    (hp.muziek / "Fats Domino - blueberry hill-bQQCPrwKzdo.mp3").write_bytes(b"x")
+    (hp.muziek / "001-0102 - Cindy - A La Bonne Heure - onbekende titel.mp3").write_bytes(b"x")
+    (hp.muziek / "Mr. Soft").write_bytes(id3)
+    (hp.muziek / "Wie ook alweer - Zomaar iets - qqq9").write_bytes(id3)
+    hlog: list[str] = []
+    kern.fixprefix(kern.Context(paden=hp, log=hlog.append))
+    eind = sorted(p.name for p in kern.mp3_bestanden(hp.muziek))
+    check("fixprefix herstelt de namen met de hitlijst",
+          any("Fats Domino - Blueberry Hill.mp3" in n for n in eind)
+          and any("Cindy - A La Bonne Heure.mp3" in n for n in eind),
+          str(eind))
+    check("onbekende naam blijft staan, maar krijgt .mp3",
+          any(n.endswith("Wie ook alweer - Zomaar iets - qqq9.mp3") for n in eind)
+          and any(n.endswith("Mr. Soft.mp3") for n in eind),
+          str(eind))
+    check("fixprefix logt welke namen hersteld zijn",
+          any("Fats Domino - blueberry hill-bQQCPrwKzdo  ->  Fats Domino - Blueberry Hill"
+              in regel for regel in hlog),
+          str([r for r in hlog if "->" in r][:4]))
+    check("herstelde namen zijn uniek en genummerd",
+          len(eind) == 4
+          and len(set(eind)) == 4
+          and sorted(int(n.split("-", 1)[0]) for n in eind) == [1, 2, 3, 4],
+          str(eind))
+    shutil.rmtree(hmap, ignore_errors=True)
+
+    # Zonder hits-bestand moet het gewoon nummeren, niet de fout in gaan.
+    nmap = Path(tempfile.mkdtemp(prefix="top30nohits-"))
+    np_ = kern.Paden(nmap, nmap / "muziek").maak()
+    (np_.muziek / "Mouth & MacNeal - Bat-Te-Ring-Ram.mp3").write_bytes(b"x")
+    (np_.muziek / "ABBA - Mamma Mia-unfzfe8f9NI").write_bytes(
+        b"ID3\x03\x00\x00\x00\x00\x00\x10" + b"\x00" * 80)
+    kern.fixprefix(kern.Context(paden=np_, log=lambda *_: None))
+    check("zonder hitlijst blijft de naam zoals hij is",
+          sorted(kern.zonder_prefix(p.name) for p in kern.mp3_bestanden(np_.muziek))
+          == ["ABBA - Mamma Mia-unfzfe8f9NI.mp3",
+              "Mouth & MacNeal - Bat-Te-Ring-Ram.mp3"],
+          str(sorted(p.name for p in kern.mp3_bestanden(np_.muziek))))
+    # Een heel lange naam wordt afgeknipt in plaats van te breken: de hele
+    # bestandsnaam mag immers niet langer zijn dan wat het bestandssysteem pakt.
+    lang = "Een hele lange titel " * 10
+    (np_.muziek / f"{lang}en nog wat.mp3").write_bytes(b"x")
+    kern.fixprefix(kern.Context(paden=np_, log=lambda *_: None))
+    afgeknipt = [p for p in kern.mp3_bestanden(np_.muziek) if p.name.endswith(".mp3")]
+    check("een te lange naam wordt afgeknipt en genummerd",
+          len(afgeknipt) == 3
+          and all(len(kern.zonder_prefix(p.name)) <= 123 for p in afgeknipt)
+          and any(kern.zonder_prefix(p.name).startswith("Een hele lange titel")
+                  for p in afgeknipt),
+          str([(len(p.name), p.name[:40]) for p in afgeknipt]))
+    shutil.rmtree(nmap, ignore_errors=True)
 
     # Duplicaten weghalen: de muziekmap wordt vergeleken met de downloadlijst
     inventaris = kern.muziek_inventaris(paden.muziek)
@@ -236,7 +518,8 @@ def test_kern() -> None:
           str(sorted(inventaris)[:4]))
     check("inventaris kent een mp3 met een losse naam op",
           kern.vergelijk_sleutel("Queen", "Bohemian Rhapsody") in inventaris,
-          kern.vergelijk_sleutel("Queen", "Bohemian Rhapsody"))
+          f"{kern.vergelijk_sleutel('Queen', 'Bohemian Rhapsody')} / "
+          f"bestanden={sorted(p.name for p in paden.muziek.iterdir())}")
     check("inventaris herkent een handmatig hernoemd bestand via de tags",
           kern.vergelijk_sleutel("ABBA", "Dancing Queen") in inventaris,
           str(sorted(inventaris)))

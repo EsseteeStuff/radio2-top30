@@ -376,7 +376,7 @@ losse stappen.
 | **Alleen downloaden** | De nummers uit het hits-bestand van de gekozen jaren op YouTube opzoeken en als mp4 opslaan. |
 | **Alleen converteren** | Alle mp4's uit de mp4-map omzetten naar mp3. |
 | **Alleen verplaatsen** | De mp3's uit de mp3-map naar je muziekmap zetten, met nummering. |
-| **Prefixen herstellen** | Alle nummers in je muziekmap dezelfde breedte geven, passend bij het aantal bestanden. |
+| **Prefixen herstellen** | Je muziekmap helemaal opnieuw nummeren: namen herstellen met de hitlijst, alle bestaande nummering eraf, dan schudden, dan `0001-` tot en met het aantal. |
 
 **Waarom de losse stappen?** Ze zijn er voor als het programma onderbroken is
 of als er iets misging. Kies dan dezelfde stappen opnieuw, alleen begin je bij
@@ -399,7 +399,7 @@ Vier schakelaars onder de taken.
 | --- | --- | --- |
 | **Alleen nummers downloaden die ik nog niet heb** | aan | Vergelijkt de lijst met je muziekmap en slaat over wat er al staat. Zie onderaan deze pagina. |
 | **mp4's opruimen na converteren** | aan | De mp3 blijft, de video verdwijnt. Zet het uit als je de mp4's wilt bewaren of nog een keer wilt converteren. |
-| **Schudden en hernummeren** | aan | Bij het verplaatsen krijgt elk bestand een willekeurige nieuwe volgorde met een numerieke prefix, zodat hetzelfde nummer nooit twee keer achter elkaar staat. Zet het uit als je de bestanden in de volgorde van de hitlijst wilt houden. |
+| **Schudden en hernummeren** | aan | Bij het verplaatsen krijgt elk bestand een willekeurige nieuwe volgorde met een numerieke prefix, zodat hetzelfde nummer nooit twee keer achter elkaar staat. Let op: dit doet **alle** bestanden in de muziekmap, niet alleen de net gedownloade. De breedte van de prefix volgt het totale aantal bestanden, dus bij 9072 bestanden wordt `00001-` ineens `0001-`. Zet het uit als je de muziekmap met andere programma's deelt. Zet het uit als je de bestanden in de volgorde van de hitlijst wilt houden. |
 | **Hits-lijst opnieuw scrapen** | uit | Standaard wordt een bestaand hits-bestand hergebruikt, zodat je een onderbroken run kunt hervatten. Zet het aan als je denkt dat de lijst niet klopt. |
 | **YouTube-cookies** | `chromium` | Uit welke browser yt-dlp de cookies mag lezen. Zie hieronder. |
 
@@ -584,13 +584,75 @@ willekeurige volgorde. Twee dingen daarvan:
   een extra prettigheid van de schud-optie.
 
 Bij 250 bestanden in je map krijg je dus `001-` t/m `250-` in plaats van
-`00001-` t/m `00250-`. Gebruik je de taak *Prefixen herstellen*, dan brengt die
-alle nummers alsnog op één breedte — ook als ze door de hand zijn verspreid of
-ineens vier cijfers hebben.
+`00001-` t/m `00250-`.
+
+#### Prefixen herstellen
+
+De taak *Prefixen herstellen* repareert je hele muziekmap, in deze volgorde:
+
+1. **Tellen.** Het aantal bestanden bepaalt de breedte van de prefix. Bij 1365
+   bestanden zijn dat vier cijfers, dus `0001-` tot en met `1365-`.
+2. **Namen opruimen.** Voor elk bestand wordt de hitlijst in de werkmap
+   geraadpleegd. Wat daarin staat krijgt de naam uit die lijst; zie
+   [Namen herstellen](#namen-herstellen) hieronder.
+3. **Alle bestaande prefixen eraf.** Ook dubbel gestapelde nummering als
+   `001-0423 - Bonnie St. Claire - …` en losse varianten als `0423 - …` of `7-…`
+   verdwijnen volledig. Een titel die toevallig met cijfers begint blijft heel:
+   `10cc - Donna` en `3 Doors Down - Here Without You` veranderen niet.
+4. **Schudden.** De volgorde wordt opnieuw bepaald, zodat dezelfde artiest niet
+   twee keer achter elkaar komt te staan.
+5. **Oplopend nummeren** van `0001-` tot en met het aantal.
+
+Bestanden die helemaal geen nummer hadden krijgen er dus ook een, en bestanden
+zonder extensie (`10cc - Donna`) worden meegeteld als het programma ze als mp3
+herkent aan de ID3-tag. Je krijgt er vanaf nu in elk geval een `.mp3` achter. Het
+is een hernoeming: er verdwijnt niets en er komt niets bij.
 
 > Let op bij het overstappen: je huidige bestanden met `00001-` heten straks
 > `001-`. Voor programma's die op de bestandsnaam sorteren is dat een andere
 > volgorde, maar het nummer zelf verandert niet.
+
+#### Namen herstellen
+
+Veel bestanden heten naar de YouTube-video waar ze vandaan komen, in plaats van
+naar het nummer zelf:
+
+```
+0012-Rod Stewart - Tonight's The Night (Official Video)-IZr6AE-u2UM - onbekende titel.mp3
+```
+
+Daar zit een video-id in, de aanduiding `(Official Video)`, en `onbekende titel`
+in plaats van de echte titel. Het programma herstelt de naam door de nummers uit
+de hitlijst te vergelijken met de bestandsnaam én met de ID3-tags. Wat er
+daarbij gebeurt:
+
+* **Een treffer in de hitlijst wint altijd.** De bestandsnaam wordt dan
+  `0012-Rod Stewart - Tonight's the Night (Gonna Be Alright).mp3`. Het gaat
+  hierbij om hoofdletters, liggende streepjes, gebogen leestekens (`You’re`) en
+  accenten: die maken niet uit.
+* **Een YouTube-id wordt nooit op gok afgehaald.** Een video-id is precies 11
+  tekens, en daar zijn titels als `Bat-Te-Ring-Ram` en `D-I-V-O-R-C-E` in te
+  herkennen. Het programma haalt zo'n stuk er alleen af als de hitlijst bevestigt
+  dat het een id is.
+* **Blijft de titel dubbelzinnig, dan blijft de naam staan.** `Bésame Mucho` staat
+  in de hitlijst vier keer (van Apollo 100, Dalida, Dennie Christian en Trini
+  Lopez). Zo'n bestand wordt niet gokt: het houdt zijn naam en krijgt alleen een
+  nummer. De taak logt welke namen hersteld zijn, zodat je het kunt nalopen.
+
+Is er geen hitlijst in de werkmap (of staat het nummer er niet in), dan blijft
+de bestandsnaam zoals hij is. Ook dan verdwijnen de prefixen, komt er `.mp3`
+achter en wordt alles opnieuw genummerd.
+
+Tekens die in een bestandsnaam niet mogen worden gehaald de titel op de laatste
+plaats. De hitlijst zegt bijvoorbeeld `Gary Glitter - Do You Wanna Touch Me?`,
+maar een vraagteken mag niet in een bestandsnaam op Windows. Die haalt `schoon()`
+eraf, net als een `/` of een punt op het einde: `Pinball Wizard / See Me, Feel Me`
+wordt `Pinball Wizard See Me, Feel Me`.
+
+> De ID3-tags zelf worden *niet* metgeschreven. Een tag als
+> `Banapple Gas 1976 4K-KIoUO_3pXwY.mp3` blijft dus rommelig. Dat is geen probleem
+> voor het programma: `muziek_inventaris()` leest zowel de bestandsnaam als de
+> tags, dus zo'n nummer wordt niet opnieuw gedownload.
 
 ### De mp3-tags
 
@@ -647,7 +709,7 @@ of via de launcher:
 | `download` | Alleen downloaden, uit het hits-bestand van de opgegeven jaren. |
 | `convert` | Alleen de mp4's omzetten. |
 | `verplaats` | Alleen de mp3's naar je muziekmap zetten. |
-| `fixprefix` | Alle nummers dezelfde breedte geven. |
+| `fixprefix` | De muziekmap opnieuw nummeren: namen herstellen met de hitlijst, alle nummering eraf, schudden, `0001-` tot en met het aantal. |
 
 ### Opties
 
@@ -711,6 +773,25 @@ onderbreking wat er al klaar is, en het weet welke artiest en titel bij welk
 bestand horen, zodat de mp3 de juiste tags krijgt. **Verwijder dit bestand
 niet** tenzij je helemaal opnieuw wilt beginnen.
 
+### Standaardmappen
+
+Staat er nog geen instelling — bijvoorbeeld op een verse computer — dan
+zoekt het programma zijn mappen op de plek die bij dat besturingssysteem en
+die taal gebruikelijk is:
+
+| Besturingssysteem | Werkmap | Muziekmap |
+| --- | --- | --- |
+| Linux | `~/.local/share/Top30` | `~/Muziek/Top30` — in een Nederlandse taal `Muziek`, anders `Music` |
+| macOS | `~/Library/Application Support/Top30` | `~/Music/Top30` |
+| Windows | `%LOCALAPPDATA%\Top30` | `…\Music\Top30` of `…\Muziek\Top30` |
+
+Je kunt ze allebei verzetten; het programma onthoudt wat je hebt ingesteld.
+
+Twee dingen zijn bewust zo gekozen. De werkmap staat **niet** in `temp`, want
+een besturingssysteem mag die zomaar leegmaken en dan zijn je hitlijsten
+kwijt. En de muziekmap is een **eigen map binnen** de muziekmap van het
+systeem, nooit een verzameling die een ander programma beheert.
+
 ### Instellingen
 
 Je instellingen staan in een map `Top30` in je gebruikersmap:
@@ -764,6 +845,17 @@ Daar belanden de afgewerkte bestanden:
 002-Thin Lizzy - Whiskey in the Jar.mp3
 003-Mort Shuman - Le Lac Majeur.mp3
 ```
+
+**Gebruik hiervoor een eigen map.** Het programma gaat namelijk willekeurig
+schudden en hernummeren zodra *Schudden en hernummeren* aan staat — en dat
+doet het met álle mp3's die er al staan, niet alleen met de net gedownloade.
+De breedte van de prefix volgt het totale aantal bestanden, dus bij 9072
+bestanden wordt `00001-` ineens `0001-` en krijgt je hele map een andere
+volgorde. Een map die je met een ander programma beheert, gaat daar dus
+volledig onderdoor.
+
+Staat er nog geen instelling, dan gebruikt het programma `~/Muziek/Top30`.
+Dat is bewust een lege, eigen map en nooit een bestaande verzameling.
 
 De mp4's worden standaard na de conversie verwijderd. Wil je ze bewaren, zet
 *mp4's opruimen na converteren* uit — ze blijven dan in de mp4-map staan tot
@@ -835,9 +927,10 @@ verandert de naam, en het programma zoekt de tweede dus niet.
 
 **Symptoom 2:** *"Geen mp3-bestanden gevonden in …"*
 
-Dat komt bij *Alleen verplaatsen* of *Prefixen herstellen* wanneer er nog niets
-in de mp3-map of de muziekmap ligt. Kijk in de teller naast **CONSOLE** wat er
-wél staat, en kies de taak die daarop volgt.
+Dat komt bij *Alleen verplaatsen* wanneer de muziekmap leeg zou blijven terwijl
+er wel mp3's klaarstaan. Bij *Prefixen herstellen* zegt het programma alleen
+dat er nog niets in je muziekmap ligt en stopt het zonder fout. Kijk in de teller
+naast **CONSOLE** wat er wél staat, en kies de taak die daarop volgt.
 
 **Symptoom 3:** *"Scrapen leverde geen nummers op."*
 
@@ -855,14 +948,35 @@ zet dan een `(2)` achter de titel:
 
 Dat is bedoeld; anders zou het tweede bestand het eerste overschrijven.
 
-### Probleem 7: ik wil helemaal opnieuw beginnen
+Een `(2)` die in de oude bestandsnaam stond kan na *Prefixen herstellen* verdwijnen
+(`The Trammps - Where Do We Go From Here (2)` wordt
+`The Trammps - Where Do We Go From Here`). Kwam dat `(2)` doordat de titels toen
+nog verschilden, bijvoorbeeld door een YouTube-id, dan was het niet nodig. Kwam
+het doordat je twee keer hetzelfde nummer hebt gedownload, dan zet het programma
+het `(2)` alsnog terug.
+
+### Probleem 7: een bestandsnaam blijft rommelig
+
+Bij *Prefixen herstellen* krijgt een bestand alleen een nieuwe naam als de
+hitlijst in je werkmap weet hoe het heet. Soms is dat er niet:
+
+* **Het nummer staat niet in de hitlijst** (buiten het jaarbereik dat je gescraped
+  hebt). Haal dan *Hits-lijst opnieuw scrapen* aan met een ruimer jaarbereik.
+* **De titel staat er wel, maar ook van iemand anders.** `Bésame Mucho` bestaat in
+  de hitlijst vier keer; het programma kiest dan liever niets dan het verkeerde
+  en laat de naam staan.
+
+De taak logt welke namen hersteld zijn, dus je kunt precies zien wat er is
+gebeurd. Zie [Namen herstellen](#namen-herstellen).
+
+### Probleem 8: ik wil helemaal opnieuw beginnen
 
 Verwijder de inhoud van je werkmap (of verwijder en hernoem het
 hits-bestand) en zet *Hits-lijst opnieuw scrapen* aan. Je muziekmap wordt
 daarbij niet aangeraakt. Om ook alles opnieuw te beginnen, verwijder je de
 mp3's uit je muziekmap apart.
 
-### Probleem 8: de zelftest faalt
+### Probleem 9: de zelftest faalt
 
 Voer hem opnieuw uit met de details:
 

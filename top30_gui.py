@@ -55,7 +55,7 @@ TAAL = {
     "download": ("Alleen downloaden", "YouTube → mp4, uit het hits-bestand van de gekozen jaren."),
     "convert": ("Alleen converteren", "Alle mp4's uit de mp4-map omzetten naar mp3."),
     "verplaats": ("Alleen verplaatsen", "De mp3's uit de mp3-map naar je muziekmap zetten."),
-    "fixprefix": ("Prefixen herstellen", "Alle nummers dezelfde breedte geven, passend bij het aantal bestanden."),
+    "fixprefix": ("Prefixen herstellen", "Namen herstellen met de hitlijst, alle nummering eraf, lijst schudden, en oplopend nummeren vanaf 0001."),
 }
 
 
