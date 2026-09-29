@@ -1,25 +1,19 @@
-# Top30 heeft maar deze pakketten nodig.
-#   pip install -r requirements.txt
-# Daarnaast moet ffmpeg op het systeem staan (voor mp4 -> mp3):
-#   Debian/Ubuntu:  sudo apt install ffmpeg
-#   Fedora:         sudo dnf install ffmpeg
-#   macOS:          brew install ffmpeg
-
-# Venster en stijl
+beautifulsoup4==4.15.0
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.5.1
+cryptography==50.0.1
+idna==3.20
+jeepney==0.9.0
+mutagen==1.48.1
+pycparser==3.0
 PySide6==6.11.2
 PySide6_Addons==6.11.2
 PySide6_Essentials==6.11.2
-shiboken6==6.11.2
-
-# Hitlijsten ophalen
 requests==2.34.2
-beautifulsoup4==4.15.0
+SecretStorage==3.5.0
+shiboken6==6.11.2
 soupsieve==2.10
-certifi==2026.7.22
-charset-normalizer==3.5.1
-idna==3.20
+typing_extensions==4.16.0
 urllib3==2.8.0
-
-# Downloaden en converteren
 yt-dlp==2026.8.19
-mutagen==1.48.1
