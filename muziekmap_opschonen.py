@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, "/home/serge/Projecten/Python3/top30")
 import top30_core as k
 
-MUZIEK = Path("/home/serge/Muziek/DeJaren70")
+MUZIEK = Path("/home/serge/Muziek/Jaren70")
 
 
 def bitrate(pad: Path) -> int:
