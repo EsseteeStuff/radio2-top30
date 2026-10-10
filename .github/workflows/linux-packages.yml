@@ -72,20 +72,20 @@ jobs:
           cp LICENSE "portable/${map}/LICENSE"
           cp top30.svg "portable/${map}/top30.svg"
           cp packaging/linux/top30.desktop "portable/${map}/top30.desktop"
-          cat > "portable/${map}/README.txt" <<'EOF'
-Top30 - VRT Radio 2 Top 30 archiver (zelfstandig)
-
-Een enkel uitvoerbaar bestand, inclusief de gebundelde hulpprogramma's
-(ffmpeg, node en yt-dlp) - geen installatie nodig.
-
-Start met:  ./top30
-
-Optioneel handmatig integreren in het menu:
-  install -D top30.desktop ~/.local/share/applications/top30.desktop
-  install -D top30.svg ~/.local/share/icons/hicolor/scalable/apps/top30.svg
-
-Licentie: GPL-3.0-or-later (zie LICENSE).
-EOF
+          printf '%s\n' \
+            "Top30 - VRT Radio 2 Top 30 archiver (zelfstandig)" \
+            "" \
+            "Een enkel uitvoerbaar bestand, inclusief de gebundelde hulpprogramma's" \
+            "(ffmpeg, node en yt-dlp) - geen installatie nodig." \
+            "" \
+            "Start met:  ./top30" \
+            "" \
+            "Optioneel handmatig integreren in het menu:" \
+            "  install -D top30.desktop ~/.local/share/applications/top30.desktop" \
+            "  install -D top30.svg ~/.local/share/icons/hicolor/scalable/apps/top30.svg" \
+            "" \
+            "Licentie: GPL-3.0-or-later (zie LICENSE)." \
+            > "portable/${map}/README.txt"
           (cd portable && tar -czf "../Top30-${VER}-linux-x86_64.tar.gz" "${map}")
           ls -lh "Top30-${VER}-linux-x86_64.tar.gz"
 
