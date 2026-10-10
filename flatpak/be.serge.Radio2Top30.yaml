@@ -1,0 +1,100 @@
+app-id: be.serge.Radio2Top30
+runtime: org.kde.Platform
+runtime-version: '6.11'
+sdk: org.kde.Sdk
+command: top30
+
+finish-args:
+  - --share=ipc
+  - --socket=x11
+  - --socket=wayland
+  - --device=dri
+  - --share=network
+  - --filesystem=home
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --talk-name=org.freedesktop.portal.Desktop
+  - --talk-name=org.freedesktop.portal.FileChooser
+  - --talk-name=org.freedesktop.portal.OpenURI
+
+modules:
+  # --- JavaScript-runtimes die yt-dlp nodig heeft (deno/node) --------------
+  - name: node24
+    buildsystem: simple
+    sources:
+      - type: file
+        path: binaries/node24
+    build-commands:
+      - mkdir -p /app/bin && install -m755 node24 /app/bin/node
+
+  - name: deno
+    buildsystem: simple
+    sources:
+      - type: file
+        path: binaries/deno
+    build-commands:
+      - mkdir -p /app/bin && install -m755 deno /app/bin/deno
+
+  # --- Statische ffmpeg (geen afhankelijkheid van runtime-bibliotheken) ---
+  - name: ffmpeg
+    buildsystem: simple
+    sources:
+      - type: file
+        path: binaries/ffmpeg
+    build-commands:
+      - mkdir -p /app/bin && install -m755 ffmpeg /app/bin/ffmpeg
+
+  # --- yt-dlp als losstaand programma -------------------------------------
+  - name: yt-dlp-bin
+    buildsystem: simple
+    sources:
+      - type: file
+        path: binaries/yt-dlp
+    build-commands:
+      - mkdir -p /app/bin && install -m755 yt-dlp /app/bin/yt-dlp
+
+  # --- De applicatie zelf -------------------------------------------------
+  - name: radio2-top30
+    buildsystem: simple
+    sources:
+      - type: file
+        path: ../top30.py
+      - type: file
+        path: ../top30_core.py
+      - type: file
+        path: ../top30_gui.py
+      - type: file
+        path: ../top30.svg
+      - type: file
+        path: ../LICENSE
+      - type: file
+        path: be.serge.Radio2Top30.desktop
+      - type: file
+        path: be.serge.Radio2Top30.metainfo.xml
+    build-commands:
+      - mkdir -p /app/bin /app/lib/top30
+      - install -Dm644 top30.py top30_core.py top30_gui.py -t /app/lib/top30/
+      - |
+        cat > /app/bin/top30 << 'EOF'
+        #!/bin/sh
+        exec python3 /app/lib/top30/top30.py "$@"
+        EOF
+      - chmod +x /app/bin/top30
+      - install -Dm644 be.serge.Radio2Top30.desktop /app/share/applications/be.serge.Radio2Top30.desktop
+      - install -Dm644 top30.svg /app/share/icons/hicolor/scalable/apps/be.serge.Radio2Top30.svg
+      - install -Dm644 be.serge.Radio2Top30.metainfo.xml /app/share/metainfo/be.serge.Radio2Top30.metainfo.xml
+      - install -Dm644 LICENSE /app/share/licenses/be.serge.Radio2Top30/LICENSE
+
+  # --- Python-afhankelijkheden -------------------------------------------
+  # PySide6, requests, beautifulsoup4, mutagen, cryptography, yt-dlp, ...
+  # Kant-en-klaar overgenomen uit de .venv, zodat de build zonder
+  # internettoegang werkt.
+  - name: python-deps
+    buildsystem: simple
+    sources:
+      - type: dir
+        path: ../.venv/lib/python3.13/site-packages
+    build-commands:
+      - mkdir -p /app/lib/python3.13/site-packages
+      - cp -r . /app/lib/python3.13/site-packages/
+      - find /app/lib/python3.13/site-packages -name "*.pyc" -delete
+      - find /app/lib/python3.13/site-packages -name "__pycache__" -type d -delete

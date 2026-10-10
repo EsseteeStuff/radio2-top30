@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Flatpak: build-uitvoer en meegebundelde (grote) binaries
+.flatpak-builder/
+flatpak/binaries/

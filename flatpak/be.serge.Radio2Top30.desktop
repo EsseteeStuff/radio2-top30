@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Top30
+GenericName=VRT Radio 2 Top 30 Archiver
+Comment=Download and convert VRT Radio 2 Top 30 hit lists to MP3
+Exec=top30
+Icon=be.serge.Radio2Top30
+Terminal=false
+Type=Application
+Categories=Audio;AudioVideo;Utility;
+Keywords=radio2;top30;music;download;yt-dlp;mp3;
+StartupNotify=true
+StartupWMClass=Top30
