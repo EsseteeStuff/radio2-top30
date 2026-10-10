@@ -1,0 +1,146 @@
+name: Linux packages (tar.gz, deb, rpm)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release-tag waaraan de pakketten worden toegevoegd (bijv. v1.0)"
+        required: true
+        default: "v1.0"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Download bundled helpers (ffmpeg, node, yt-dlp)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .bundle/linux
+          # Zelfstandig yt-dlp binary voor Linux x86_64.
+          curl -fsSL -o .bundle/linux/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux
+          chmod +x .bundle/linux/yt-dlp
+          # Node is de JS-runtime waarmee yt-dlp de YouTube n-challenge oplost.
+          NODE_TXZ="$(curl -fsSL https://nodejs.org/dist/latest-v22.x/ | grep -oE 'node-v[0-9.]+-linux-x64\.tar\.xz' | head -1)"
+          curl -fsSL -o node.tar.xz "https://nodejs.org/dist/latest-v22.x/${NODE_TXZ}"
+          tar -xJf node.tar.xz
+          cp node-v*-linux-x64/bin/node .bundle/linux/node
+          # Statische GPL-ffmpeg (eugeneware/ffmpeg-static; zelfde als de
+          # johnvansickle-build die de Flatpak draait).
+          curl -fsSL -o .bundle/linux/ffmpeg https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-linux-x64
+          chmod +x .bundle/linux/ffmpeg .bundle/linux/node
+          ls -lh .bundle/linux/
+
+      - name: Build onefile binary
+        shell: bash
+        env:
+          TOP30_BUNDLE_DIR: "${{ github.workspace }}/.bundle/linux"
+        run: |
+          set -euo pipefail
+          pyinstaller --noconfirm --clean packaging/windows/top30-pyinstaller.spec
+          TAG="${{ inputs.release_tag || github.ref_name }}"
+          VER="${TAG#v}"
+          echo "VER=$VER" >> "$GITHUB_ENV"
+          ls -lh dist/top30
+
+      - name: Make portable tar.gz
+        shell: bash
+        run: |
+          set -euo pipefail
+          map="Top30-${VER}-linux-x86_64"
+          mkdir -p "portable/${map}"
+          cp dist/top30 "portable/${map}/top30"
+          cp LICENSE "portable/${map}/LICENSE"
+          cp top30.svg "portable/${map}/top30.svg"
+          cp packaging/linux/top30.desktop "portable/${map}/top30.desktop"
+          cat > "portable/${map}/README.txt" <<'EOF'
+Top30 - VRT Radio 2 Top 30 archiver (zelfstandig)
+
+Een enkel uitvoerbaar bestand, inclusief de gebundelde hulpprogramma's
+(ffmpeg, node en yt-dlp) - geen installatie nodig.
+
+Start met:  ./top30
+
+Optioneel handmatig integreren in het menu:
+  install -D top30.desktop ~/.local/share/applications/top30.desktop
+  install -D top30.svg ~/.local/share/icons/hicolor/scalable/apps/top30.svg
+
+Licentie: GPL-3.0-or-later (zie LICENSE).
+EOF
+          (cd portable && tar -czf "../Top30-${VER}-linux-x86_64.tar.gz" "${map}")
+          ls -lh "Top30-${VER}-linux-x86_64.tar.gz"
+
+      - name: Install fpm (deb/rpm)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo gem install fpm --no-document >/dev/null
+          echo "FPM_BIN=$(ruby -e 'puts Gem.user_dir')/bin" >> "$GITHUB_ENV"
+
+      - name: Build .deb and .rpm from staging tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="${FPM_BIN}:${PATH}"
+          OMSCHRIJVING="VRT Radio 2 Top 30 archiver: de Top 30-hitlijst downloaden en omzetten naar MP3 (zelfstandig, met gebundelde ffmpeg/node/yt-dlp)."
+          mkdir -p staging/opt/top30 staging/usr/bin \
+                   staging/usr/share/applications \
+                   staging/usr/share/icons/hicolor/scalable/apps \
+                   staging/usr/share/doc/top30
+          cp dist/top30 staging/opt/top30/top30
+          chmod 755 staging/opt/top30/top30
+          printf '#!/bin/sh\nexec /opt/top30/top30 "$@"\n' > staging/usr/bin/top30
+          chmod 755 staging/usr/bin/top30
+          cp packaging/linux/top30.desktop staging/usr/share/applications/
+          cp top30.svg staging/usr/share/icons/hicolor/scalable/apps/
+          cp LICENSE staging/usr/share/doc/top30/copyright
+          fpm -s dir -t deb -C staging -n top30 -v "${VER}" \
+            --architecture amd64 \
+            --description "$OMSCHRIJVING" \
+            --license "GPL-3.0-or-later" \
+            --vendor "EsseteeStuff" \
+            --url "https://github.com/EsseteeStuff/radio2-top30" \
+            --maintainer "EsseteeStuff" \
+            --category sound \
+            -p "top30_${VER}_amd64.deb" .
+          fpm -s dir -t rpm -C staging -n top30 -v "${VER}" \
+            --architecture x86_64 \
+            --description "$OMSCHRIJVING" \
+            --license "GPL-3.0-or-later" \
+            --vendor "EsseteeStuff" \
+            --url "https://github.com/EsseteeStuff/radio2-top30" \
+            --maintainer "EsseteeStuff" \
+            --category "Audio/Video" \
+            -p "top30-${VER}.x86_64.rpm" .
+          ls -lh top30_${VER}_amd64.deb top30-${VER}.x86_64.rpm
+
+      - name: Upload packages to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.release_tag || github.ref_name }}"
+          gh release upload "$TAG" \
+            "Top30-${VER}-linux-x86_64.tar.gz" \
+            "top30_${VER}_amd64.deb" \
+            "top30-${VER}.x86_64.rpm" --clobber

@@ -43,7 +43,7 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[os.path.join(BASEDIR, "rthook_top30.py")],
+    runtime_hooks=[os.path.join(BASEDIR, "..", "rthook_top30.py")],
     excludes=[],
     noarchive=False,
 )

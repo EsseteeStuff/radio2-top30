@@ -32,6 +32,7 @@ MANIFEST
 *.manifest
 *.spec
 !packaging/windows/*.spec
+!packaging/macos/*.spec
 
 # Installer logs
 pip-log.txt
@@ -221,3 +222,4 @@ __marimo__/
 # Flatpak: build-uitvoer en meegebundelde (grote) binaries
 .flatpak-builder/
 flatpak/binaries/
+.bundle/
