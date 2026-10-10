@@ -37,7 +37,10 @@ jobs:
           set -euo pipefail
           mkdir -p .bundle/win
           curl -fsSL -o .bundle/win/yt-dlp.exe https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe
-          curl -fsSL -o .bundle/win/node.exe https://nodejs.org/dist/latest-v22.x/node.exe
+          NODE_ZIP="$(curl -fsSL https://nodejs.org/dist/latest-v22.x/ | grep -oE 'node-v[0-9.]+-win-x64\.zip' | head -1)"
+          curl -fsSL -o node.zip "https://nodejs.org/dist/latest-v22.x/${NODE_ZIP}"
+          unzip -q -o node.zip -d node-unzip
+          cp node-unzip/node-v*-win-x64/node.exe .bundle/win/node.exe
           curl -fsSL -o ffmpeg.zip https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip
           unzip -q -o ffmpeg.zip -d ffmpeg-unzip
           cp ffmpeg-unzip/ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe .bundle/win/
