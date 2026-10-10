@@ -22,7 +22,8 @@ Deze handleiding bestaat uit twee delen:
   * [3. De projectmap](#3-de-projectmap)
   * [4. De pakketten](#4-de-pakketten)
   * [5. Controleren of het werkt](#5-controleren-of-het-werkt)
-  * [6. Extra op Linux](#6-extra-op-linux)
+  * [6. Een JavaScript-runtime](#6-een-javascript-runtime)
+  * [7. Extra op Linux](#7-extra-op-linux)
 * [Alles bij elkaar per besturingssysteem](#alles-bij-elkaar-per-besturingssysteem)
 * [Gebruiken](#gebruiken)
   * [Starten](#starten)
@@ -55,10 +56,11 @@ Deze handleiding bestaat uit twee delen:
 | 2 | **ffmpeg** op het systeem | ja |
 | 3 | De pakketten uit `requirements.txt` (PySide6, yt-dlp, mutagen, requests, beautifulsoup4) | ja |
 | 4 | Een internetverbinding | ja |
-| 5 | Een browser waar je op YouTube mee ingelogd bent | alleen als YouTube om een login vraagt |
-| 6 | Een GUI-omgeving (X11, Wayland of Windows/macOS-desktop) | alleen voor het venster |
+| 5 | Een **JavaScript-runtime** (Deno, of Node 22 of nieuwer) | ja, voor het downloaden |
+| 6 | Een browser waar je op YouTube mee ingelogd bent | alleen als YouTube om een login vraagt |
+| 7 | Een GUI-omgeving (X11, Wayland of Windows/macOS-desktop) | alleen voor het venster |
 
-Alles behalve de laatste twee is eenmalig werk bij het installeren. Daarna
+Alles behalve de laatste drie is eenmalig werk bij het installeren. Daarna
 start het programma met één commando.
 
 ---
@@ -186,7 +188,60 @@ Je zou aan het einde iets moeten zien als:
 Staan er punten tussen met een kruis, dan staat er achter elke regel waarom.
 Zie [Veelgestelde problemen](#veelgestelde-problemen).
 
-### 6. Extra op Linux
+### 6. Een JavaScript-runtime
+
+YouTube stuurt sinds 2025 een uitdaging (`n`-challenge) die opgelost moet
+worden door JavaScript. yt-dlp kan die alleen oplossen als er een
+JavaScript-runtime aanwezig is. Zonder runtime zie je dit in de console:
+
+```
+WARNING: [youtube] n challenge solving failed: Some formats may be missing.
+ERROR:   [youtube] <id>: The page needs to be reloaded.
+```
+
+Het programma zoekt zelf een runtime en geeft 'm door met `--js-runtimes`.
+Geen van beide gevonden? Dan mislukt het downloaden.
+
+**Deno (aanbevolen)** — geen systeempakketten, geen sudo, en dit is de runtime
+die yt-dlp standaard accepteert:
+
+```bash
+curl -fsSL https://deno.land/install.sh | sh
+```
+
+Dat zet `deno` in `~/.deno/bin`. Het install-script zet die map **niet** in je
+PATH; het programma kijkt daar toch naar, dus je hoeft niets te configureren.
+Voor de volledigheid kun je 'm zelf toevoegen aan `~/.bashrc`:
+
+```bash
+echo 'export PATH="$HOME/.deno/bin:$PATH"' >> ~/.bashrc
+```
+
+**Node.js** — werkt ook, maar let op de versie: yt-dlp eist **Node 22 of
+nieuwer**. Oudere versies worden stil genegeerd en dan faalt de challenge
+alsnog, met precies dezelfde foutmelding.
+
+| Besturingssysteem | Commando |
+| --- | --- |
+| Debian / Ubuntu (oudere versies) | voeg eerst de [NodeSource](https://github.com/nodesource/distributions)-bron toe, dan `sudo apt install nodejs` |
+| Debian / Ubuntu (Verse 13 en hoger) | `sudo apt install nodejs` — controleer daarna of het 22 of hoger is |
+| Fedora | `sudo dnf install nodejs` |
+| Arch | `sudo pacman -S nodejs` |
+| macOS | `brew install node` |
+| Windows | installeer vanaf [nodejs.org](https://nodejs.org/) |
+
+Controleer wat het programma ervan vindt:
+
+```bash
+.venv/bin/python -c "import top30_core as k; print(k.beschikbare_js_runtimes())"
+```
+
+Krijg je `['--js-runtimes', 'deno:/pad/naar/deno']`, dan zit het goed. Krijg je
+`[]`, dan is er geen bruikbare runtime gevonden. Is er wél een runtime maar is
+die te oud, dan zegt het programma dat op stderr, bijvoorbeeld
+`node 20.19.2 is te oud voor yt-dlp (minimaal 22.0.0)`.
+
+### 7. Extra op Linux
 
 Sommige Linux-systemen missen de systeembibliotheken die het venster nodig
 heeft. Verschijnt bij het starten een fout over `libEGL`, `libxkbcommon` of
@@ -906,7 +961,42 @@ al op. Lukt het ook daarmee niet, doe dan dit, in deze volgorde:
 4. Kies een ander jaar; sommige video's zijn nu eenmaal weggehaald en daar valt
    niets aan te doen.
 
-### Probleem 4: het downloaden gaat langzaam
+### Probleem 4: "n challenge solving failed" of "The page needs to be reloaded"
+
+**Symptoom:** herhaalde regels in de console als
+
+```
+WARNING: [youtube] n challenge solving failed: …
+ERROR:   [youtube] <id>: The page needs to be reloaded.
+```
+
+**Oorzaak:** YouTube vraagt om een uitdaging op te lossen die JavaScript
+nodig heeft, en er is geen JavaScript-runtime gevonden. Dit heeft niets te
+maken met je internetverbinding of met inloggen.
+
+**Oplossing:** installeer één runtime, zie
+[Een JavaScript-runtime](#6-een-javascript-runtime). Het makkelijkst is Deno:
+
+```bash
+curl -fsSL https://deno.land/install.sh | sh
+```
+
+Daarna controleren of het programma 'm ziet:
+
+```bash
+.venv/bin/python -c "import top30_core as k; print(k.beschikbare_js_runtimes())"
+```
+
+`['--js-runtimes', 'deno:/…/deno']` betekent dat het goed is. Krijg je `[]`, dan
+is er nog geen runtime gevonden. Gebruik je Node, houd dan rekening met de
+versie: yt-dlp eist **22 of hoger** en negeert oudere versies zonder iets te
+zeggen — met dezelfde foutmelding als resultaat.
+
+Let op: deze fout is iets anders dan
+[Probleem 3](#probleem-3-youtube-vraagt-steeds-om-in-te-loggen). Die gaat om
+`Sign in to confirm you're not a bot` en heeft met cookies te maken.
+
+### Probleem 5: het downloaden gaat langzaam
 
 Dat is meestal gewoon YouTube die het tempo afremt. Wat helpt:
 
@@ -915,7 +1005,7 @@ Dat is meestal gewoon YouTube die het tempo afremt. Wat helpt:
 * De werkmap op een **snelle schijf**. Een trage schijf is vaak de bottleneck,
   veel meer dan de internetsnelheid.
 
-### Probleem 5: "…ontbreekt in …" of "Geen mp3-bestanden gevonden"
+### Probleem 6: "…ontbreekt in …" of "Geen mp3-bestanden gevonden"
 
 **Symptoom 1:** *"hits_1971_1975.txt ontbreekt in /home/jouwnaam/temp/Top30.
 Kies 'Alleen scrapen' om hem eerst te maken."*
@@ -936,7 +1026,7 @@ naast **CONSOLE** wat er wél staat, en kies de taak die daarop volgt.
 
 Meestal een netwerkprobleem of het is even offline. Probeer het later nog eens.
 
-### Probleem 6: bestanden krijgen een dubbele naam
+### Probleem 7: bestanden krijgen een dubbele naam
 
 Twee nummers in de lijst kunnen dezelfde artiest én titel hebben. Het programma
 zet dan een `(2)` achter de titel:
@@ -955,7 +1045,7 @@ nog verschilden, bijvoorbeeld door een YouTube-id, dan was het niet nodig. Kwam
 het doordat je twee keer hetzelfde nummer hebt gedownload, dan zet het programma
 het `(2)` alsnog terug.
 
-### Probleem 7: een bestandsnaam blijft rommelig
+### Probleem 8: een bestandsnaam blijft rommelig
 
 Bij *Prefixen herstellen* krijgt een bestand alleen een nieuwe naam als de
 hitlijst in je werkmap weet hoe het heet. Soms is dat er niet:
@@ -969,14 +1059,14 @@ hitlijst in je werkmap weet hoe het heet. Soms is dat er niet:
 De taak logt welke namen hersteld zijn, dus je kunt precies zien wat er is
 gebeurd. Zie [Namen herstellen](#namen-herstellen).
 
-### Probleem 8: ik wil helemaal opnieuw beginnen
+### Probleem 9: ik wil helemaal opnieuw beginnen
 
 Verwijder de inhoud van je werkmap (of verwijder en hernoem het
 hits-bestand) en zet *Hits-lijst opnieuw scrapen* aan. Je muziekmap wordt
 daarbij niet aangeraakt. Om ook alles opnieuw te beginnen, verwijder je de
 mp3's uit je muziekmap apart.
 
-### Probleem 9: de zelftest faalt
+### Probleem 10: de zelftest faalt
 
 Voer hem opnieuw uit met de details:
 
