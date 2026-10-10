@@ -1,0 +1,65 @@
+name: Windows build (.exe)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release-tag waaraan de .exe wordt toegevoegd (bijv. v1.0)"
+        required: true
+        default: "v1.0"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Download bundled helpers (ffmpeg, node, yt-dlp)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .bundle/win
+          curl -fsSL -o .bundle/win/yt-dlp.exe https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe
+          curl -fsSL -o .bundle/win/node.exe https://nodejs.org/dist/latest-v22.x/node.exe
+          curl -fsSL -o ffmpeg.zip https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip
+          unzip -q -o ffmpeg.zip -d ffmpeg-unzip
+          cp ffmpeg-unzip/ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe .bundle/win/
+          ls -la .bundle/win/
+
+      - name: Build onefile .exe
+        shell: bash
+        env:
+          TOP30_BUNDLE_DIR: "${{ github.workspace }}/.bundle/win"
+        run: |
+          set -euo pipefail
+          pyinstaller --noconfirm --clean packaging/windows/top30-pyinstaller.spec
+          TAG="${{ inputs.release_tag || github.ref_name }}"
+          ASSET="Top30-${TAG#v}-windows-x86_64.exe"
+          cp dist/top30.exe "$ASSET"
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+          ls -lh dist/ "$ASSET"
+
+      - name: Upload .exe to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ inputs.release_tag || github.ref_name }}"
+          gh release upload "$TAG" "$ASSET" --clobber

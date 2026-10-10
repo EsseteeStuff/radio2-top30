@@ -1042,9 +1042,25 @@ def _basis_opties() -> list[str]:
     ]
 
 
+def _yt_dlp_opdracht() -> list[str]:
+    """Hoe yt-dlp aanroepen.
+
+    In een PyInstaller-pakket (bv. de Windows-.exe) bestaat 'python -m yt_dlp'
+    niet: er is geen aparte interpreter. Daar gebruiken we de losstaande
+    yt-dlp(.exe) die naast de app is meegeleverd. Buiten een pakket blijft de
+    vertrouwde 'python -m yt_dlp' gelden.
+    """
+    if getattr(sys, "frozen", False):
+        for naam in ("yt-dlp", "yt-dlp.exe"):
+            los = shutil.which(naam)
+            if los:
+                return [los]
+    return [sys.executable, "-m", "yt_dlp"]
+
+
 def _download_cmd(ctx: Context, bron: str, doel: Path) -> list[str]:
     return [
-        sys.executable, "-m", "yt_dlp",
+        *_yt_dlp_opdracht(),
         *_basis_opties(),
         "--remote-components", "ejs:github",
         "-f", "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720][ext=mp4]/b[ext=m4a]/b",
@@ -1059,7 +1075,7 @@ def _download_cmd(ctx: Context, bron: str, doel: Path) -> list[str]:
 
 def _zoek_cmd(ctx: Context, artiest: str, titel: str, aantal: int) -> list[str]:
     return [
-        sys.executable, "-m", "yt_dlp",
+        *_yt_dlp_opdracht(),
         *_basis_opties(),
         "--remote-components", "ejs:github",
         "--flat-playlist",

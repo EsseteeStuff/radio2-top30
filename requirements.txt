@@ -16,9 +16,6 @@ shiboken6==6.11.2
 soupsieve==2.10
 typing_extensions==4.16.0
 urllib3==2.8.0
-<<<<<<< HEAD
-secretstorage
+
 # Downloaden en converteren
-=======
->>>>>>> refs/remotes/origin/main
 yt-dlp==2026.8.19
