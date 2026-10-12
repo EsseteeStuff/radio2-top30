@@ -1123,6 +1123,8 @@ website meewerken.
 | `top30_gui.py` | Het venster: instellingen, taken, opties, console, voortgang. |
 | `top30_core.py` | De logica: scrapen, downloaden, converteren, verplaatsen, nummeren, tags. Bevat geen GUI-code. |
 | `selftest.py` | De zelftest. |
+| `normaliseren.py` | Hulpje: de luidheid van m4a/aac (en mp3 met `--mp3`) gelijktrekken met ffmpeg loudnorm. Droge proef, tenzij je `--ja` meegeeft. |
+| `muziekmap_opschonen.py` | Hulpje: dubbele nummers uit de muziekmap halen en opnieuw nummeren. Droge proef, tenzij je `--ja` meegeeft. |
 | `requirements.txt` | De Python-pakketten. |
 | `.venv/` | De virtual environment. Aangemaakt bij het installeren; kunt die map gewoon verwijderen en opnieuw aanmaken. |
 
