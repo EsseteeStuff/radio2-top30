@@ -182,7 +182,7 @@ Je zou aan het einde iets moeten zien als:
 
 ```
 ============================================================
-195/195 geslaagd
+202/202 geslaagd
 ```
 
 Staan er punten tussen met een kruis, dan staat er achter elke regel waarom.
@@ -1099,7 +1099,7 @@ mappen en raakt je muziek nooit aan.
 ## Zelf testen
 
 ```bash
-.venv/bin/python selftest.py             # kern + venster, 195 punten
+.venv/bin/python selftest.py             # kern + venster, 202 punten
 .venv/bin/python selftest.py --live      # ook echt één pagina ophalen
 .venv/bin/python selftest.py --scherm    # maakt scherm_donker.png / scherm_licht.png
 ```
@@ -1123,7 +1123,8 @@ website meewerken.
 | `top30_gui.py` | Het venster: instellingen, taken, opties, console, voortgang. |
 | `top30_core.py` | De logica: scrapen, downloaden, converteren, verplaatsen, nummeren, tags. Bevat geen GUI-code. |
 | `selftest.py` | De zelftest. |
-| `normaliseren.py` | Hulpje: de luidheid van m4a/aac (en mp3 met `--mp3`) gelijktrekken met ffmpeg loudnorm. Droge proef, tenzij je `--ja` meegeeft. |
+| `normaliseren.py` | Hulpje: de luidheid van m4a/aac (en mp3 met `--mp3`) gelijktrekken met ffmpeg loudnorm. Droge proef, tenzij je `--ja` meegeeft; `--gui` opent het venster. |
+| `normaliseren_gui.py` | Het venster bij `normaliseren.py --gui`: kies een map, stel het doelniveau in, wat eerst een droge proef en doe het daarna echt. Zelfde stijl als de Top30-app, met voortgangsbalk, console en Stoppen. |
 | `muziekmap_opschonen.py` | Hulpje: dubbele nummers uit de muziekmap halen en opnieuw nummeren. Droge proef, tenzij je `--ja` meegeeft. |
 | `requirements.txt` | De Python-pakketten. |
 | `.venv/` | De virtual environment. Aangemaakt bij het installeren; kunt die map gewoon verwijderen en opnieuw aanmaken. |

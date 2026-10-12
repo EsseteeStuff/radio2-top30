@@ -1016,6 +1016,97 @@ def test_gui(maak_scherm: bool = False) -> None:
     QTimer.singleShot(0, app.quit)
 
 
+def test_normaliseren_gui() -> None:
+    sectie("Normaliserenvenster (offscreen)")
+    from PySide6.QtCore import QEventLoop, QTimer
+    from PySide6.QtWidgets import QApplication
+
+    import normaliseren as nm
+    import normaliseren_gui as ng
+
+    app = QApplication.instance() or QApplication([])
+
+    def wacht_op(draad, ms: int) -> bool:
+        """Blok tot de draad klaar is, terwijl de event loop blijft draaien."""
+        lus = QEventLoop()
+        draad.finished.connect(lus.quit)
+        klok = QTimer()
+        klok.setSingleShot(True)
+        klok.timeout.connect(lus.quit)
+        klok.start(ms)
+        lus.exec()
+        return not draad.isRunning()
+
+    werk = Path(tempfile.mkdtemp(prefix="top30norm-"))
+    audio = werk / "audio"
+    audio.mkdir()
+    venster = None
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+             "-i", "sine=frequency=440:duration=2", "-af", "volume=-25dB",
+             "-c:a", "aac", "-b:a", "128k", str(audio / "zacht.m4a")],
+            check=True, capture_output=True,
+        )
+        venster = ng.Venster("donker", audio)
+        check("normaliseren-venster bouwt", bool(venster.windowTitle()),
+              venster.windowTitle())
+
+        # Droge proef
+        uitkomst: list = []
+        venster._start(proef=True)
+        draad = venster.thread
+        check("droge proef start", draad is not None and draad.isRunning())
+        draad.klaar.connect(lambda m, o: uitkomst.append((m, o)))
+        check("droge proef is afgerond", wacht_op(draad, 30000))
+        plan = venster.console.toPlainText()
+        check("droge proef toont het plan",
+              bool(uitkomst) and uitkomst[0][1] and "te normaliseren" in plan,
+              plan[-200:])
+
+        # Echte ronde
+        uitkomst.clear()
+        venster._start(proef=False)
+        draad = venster.thread
+        draad.klaar.connect(lambda m, o: uitkomst.append((m, o)))
+        check("echte ronde is afgerond", wacht_op(draad, 60000))
+        meting = nm.meet(
+            kern.Context(paden=kern.Paden(audio, audio)), audio / "zacht.m4a",
+            -16.0, -1.5, 11.0)
+        check("na normaliseren is het niveau op doel",
+              bool(uitkomst) and uitkomst[0][1]
+              and meting is not None
+              and abs(float(meting["input_i"]) + 16.0) <= 0.5,
+              str(meting))
+
+        # Onderbreken tijdens echt werk
+        werk2 = Path(tempfile.mkdtemp(prefix="top30normstop-"))
+        audio2 = werk2 / "audio"
+        audio2.mkdir()
+        for i in range(3):
+            subprocess.run(
+                ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+                 "-i", f"sine=frequency={300 + i * 40}:duration=90",
+                 "-c:a", "aac", "-b:a", "64k", str(audio2 / f"n{i}.m4a")],
+                check=True, capture_output=True,
+            )
+        stop_uitkomst: list = []
+        draad2 = ng.NormaliseerThread(audio2, nm.Opties(ja=True))
+        draad2.log.connect(venster.log)
+        draad2.klaar.connect(lambda m, o: stop_uitkomst.append((m, o)))
+        draad2.start()
+        QTimer.singleShot(250, draad2.requestInterruption)
+        check("onderbreken stopt de normalisatie",
+              wacht_op(draad2, 30000)
+              and bool(stop_uitkomst) and not stop_uitkomst[0][1],
+              str(stop_uitkomst))
+        shutil.rmtree(werk2, ignore_errors=True)
+    finally:
+        shutil.rmtree(werk, ignore_errors=True)
+        if venster is not None:
+            venster.close()
+
+
 # ---------------------------------------------------------------------------
 
 def main() -> int:
@@ -1032,6 +1123,7 @@ def main() -> int:
         test_kern()
         if "--live" in sys.argv:
             test_scrapen_live()
+        test_normaliseren_gui()
         test_gui(maak_scherm="--scherm" in sys.argv)
     finally:
         kern.config_map = lambda: echte_map  # type: ignore[assignment]

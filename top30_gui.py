@@ -164,7 +164,7 @@ def stijlblad(kleuren: dict) -> str:
     }}
 
     /* ---------- invoer ---------- */
-    QLineEdit, QSpinBox, QComboBox {{
+    QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
         background: {kleuren['paneel_licht']};
         border: 1px solid {kleuren['rand']};
         border-radius: 7px;
@@ -173,14 +173,18 @@ def stijlblad(kleuren: dict) -> str:
         selection-background-color: {kleuren['accent']};
         selection-color: {kleuren['accent_tekst']};
     }}
-    QLineEdit:focus, QSpinBox:focus, QComboBox:focus {{
+    QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
         border: 1px solid {kleuren['accent']};
     }}
-    QLineEdit:disabled, QSpinBox:disabled {{ color: {kleuren['tekst_zwak']}; }}
-    QSpinBox::up-button, QSpinBox::down-button {{
+    QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {{
+        color: {kleuren['tekst_zwak']};
+    }}
+    QSpinBox::up-button, QSpinBox::down-button,
+    QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
         background: {kleuren['rand']}; border: none; width: 16px;
     }}
-    QSpinBox::up-button:hover, QSpinBox::down-button:hover {{
+    QSpinBox::up-button:hover, QSpinBox::down-button:hover,
+    QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {{
         background: {kleuren['accent']};
     }}
     QComboBox::drop-down {{ border: none; width: 22px; }}
