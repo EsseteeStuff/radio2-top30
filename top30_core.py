@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026 EsseteeStuff
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """Top30 kern: scrapen, downloaden, converteren en verplaatsen.
 
 Deze module bevat geen GUI-code en werkt zowel vanuit de GUI als vanuit de
@@ -14,6 +28,7 @@ kunt starten en alleen het ontbrekende werk doet.
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import queue
@@ -369,11 +384,90 @@ def _dood_proces(proces: subprocess.Popen) -> None:
         pass
 
 
-def beschikbare_js_runtimes() -> list[str]:
-    gevonden = [naam for naam in ("deno", "node") if shutil.which(naam)]
+# De minimale versies die yt-dlp per JavaScript-runtime accepteert (zie
+# yt_dlp/utils/_jsruntime.py). Oudere versies worden stil genegeerd, waarna
+# YouTube zijn n-challenge niet meer kan oplossen en de download faalt.
+JS_RUNTIME_MINIMA: dict[str, tuple[int, int, int]] = {
+    "deno": (2, 3, 0),
+    "node": (22, 0, 0),
+}
+
+# Denos eigen install-script zet 'm in ~/.deno/bin zonder die map aan PATH toe
+# te voegen. Een grafisch gestart programma (via een paneel of een .desktop)
+# erft die PATH bovendien niet van je shell, dus we kijken er expliciet naar.
+JS_RUNTIME_ZOEKPADEN = ("~/.deno/bin", "~/.local/bin", "/usr/local/bin")
+
+_gemelde_js_fouten: set[str] = set()
+
+
+def _js_runtime_pad(naam: str) -> str | None:
+    """Het volledige pad van een JS-runtime, of None als 'm er niet is."""
+    gevonden = shutil.which(naam)
     if gevonden:
-        return ["--js-runtimes", ",".join(gevonden)]
-    return []
+        return gevonden
+    for map_ in JS_RUNTIME_ZOEKPADEN:
+        kandidaat = Path(map_).expanduser() / naam
+        if kandidaat.is_file() and os.access(kandidaat, os.X_OK):
+            return str(kandidaat)
+    return None
+
+
+def _js_runtime_versie(pad: str) -> tuple[int, int, int] | None:
+    """Lees de versie van een JS-runtime, of None als dat niet lukt."""
+    try:
+        voltooid = subprocess.run(
+            [pad, "--version"], capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    gevonden = re.search(r"(\d+)\.(\d+)\.(\d+)", voltooid.stdout)
+    if not gevonden:
+        return None
+    return tuple(int(deel) for deel in gevonden.groups())  # type: ignore[return-value]
+
+
+@functools.lru_cache(maxsize=1)
+def _js_runtime_plan() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Bepaal eenmalig welke runtimes bruikbaar zijn.
+
+    Geeft (bruikbaar, fouten) terug. Een runtime die te oud is, wordt niet
+    doorgegeven: yt-dlp zou 'm stil negeren en dan valt de n-challenge weg.
+    """
+    bruikbaar: list[str] = []
+    fouten: list[str] = []
+    for naam, minimum in JS_RUNTIME_MINIMA.items():
+        pad = _js_runtime_pad(naam)
+        if not pad:
+            continue
+        versie = _js_runtime_versie(pad)
+        if versie is None:
+            # Onbekende versie: niet blokkeren, yt-dlp beslist zelf.
+            bruikbaar.append(f"{naam}:{pad}")
+            continue
+        if versie < minimum:
+            fouten.append(
+                f"{naam} {'.'.join(str(d) for d in versie)} is te oud voor yt-dlp "
+                f"(minimaal {'.'.join(str(d) for d in minimum)}) en wordt overgeslagen"
+            )
+            continue
+        bruikbaar.append(f"{naam}:{pad}")
+    return tuple(bruikbaar), tuple(fouten)
+
+
+def beschikbare_js_runtimes() -> list[str]:
+    """
+    De --js-runtimes-optie voor yt-dlp, op volgorde van voorkeur.
+
+    Leeg als er geen enkele bruikbare runtime is; yt-dlp waarschuwt dan zelf.
+    """
+    bruikbaar, fouten = _js_runtime_plan()
+    for fout in fouten:
+        if fout not in _gemelde_js_fouten:
+            _gemelde_js_fouten.add(fout)
+            print(f"top30: {fout}", file=sys.stderr)
+    if not bruikbaar:
+        return []
+    return ["--js-runtimes", ",".join(bruikbaar)]
 
 
 # --------------------------------------------------------------------------
@@ -948,9 +1042,25 @@ def _basis_opties() -> list[str]:
     ]
 
 
+def _yt_dlp_opdracht() -> list[str]:
+    """Hoe yt-dlp aanroepen.
+
+    In een PyInstaller-pakket (bv. de Windows-.exe) bestaat 'python -m yt_dlp'
+    niet: er is geen aparte interpreter. Daar gebruiken we de losstaande
+    yt-dlp(.exe) die naast de app is meegeleverd. Buiten een pakket blijft de
+    vertrouwde 'python -m yt_dlp' gelden.
+    """
+    if getattr(sys, "frozen", False):
+        for naam in ("yt-dlp", "yt-dlp.exe"):
+            los = shutil.which(naam)
+            if los:
+                return [los]
+    return [sys.executable, "-m", "yt_dlp"]
+
+
 def _download_cmd(ctx: Context, bron: str, doel: Path) -> list[str]:
     return [
-        sys.executable, "-m", "yt_dlp",
+        *_yt_dlp_opdracht(),
         *_basis_opties(),
         "--remote-components", "ejs:github",
         "-f", "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720][ext=mp4]/b[ext=m4a]/b",
@@ -965,7 +1075,7 @@ def _download_cmd(ctx: Context, bron: str, doel: Path) -> list[str]:
 
 def _zoek_cmd(ctx: Context, artiest: str, titel: str, aantal: int) -> list[str]:
     return [
-        sys.executable, "-m", "yt_dlp",
+        *_yt_dlp_opdracht(),
         *_basis_opties(),
         "--remote-components", "ejs:github",
         "--flat-playlist",

@@ -1,0 +1,90 @@
+name: macOS build (.app)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release-tag waaraan het .app wordt toegevoegd (bijv. v1.0)"
+        required: true
+        default: "v1.0"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-13        # Intel (x86_64)
+            arch: x64
+            label: x86_64
+          - os: macos-latest    # Apple Silicon (arm64)
+            arch: arm64
+            label: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Download bundled helpers (ffmpeg, node, yt-dlp)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .bundle/macos
+          # yt-dlp_macos is een universeel (arm64+x64) zelfstandig binary.
+          curl -fsSL -o .bundle/macos/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos
+          chmod +x .bundle/macos/yt-dlp
+          NODE_TGZ="$(curl -fsSL https://nodejs.org/dist/latest-v22.x/ | grep -oE "node-v[0-9.]+-darwin-${{ matrix.arch }}\.tar\.gz" | head -1)"
+          curl -fsSL -o node.tar.gz "https://nodejs.org/dist/latest-v22.x/${NODE_TGZ}"
+          tar -xzf node.tar.gz
+          cp node-v*-darwin-*/bin/node .bundle/macos/node
+          # Statische GPL-ffmpeg per architectuur (eugeneware/ffmpeg-static).
+          curl -fsSL -o .bundle/macos/ffmpeg "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-darwin-${{ matrix.arch }}"
+          chmod +x .bundle/macos/ffmpeg .bundle/macos/node
+          file .bundle/macos/* || true
+          ls -lh .bundle/macos/
+
+      - name: Build Top30.app
+        shell: bash
+        env:
+          TOP30_BUNDLE_DIR: "${{ github.workspace }}/.bundle/macos"
+        run: |
+          set -euo pipefail
+          pyinstaller --noconfirm --clean packaging/macos/top30-app.spec
+          ls -ld dist/Top30.app
+          find dist/Top30.app -maxdepth 3 -type f -name "wtf*" >/dev/null 2>&1 || true
+
+      - name: Package .app as zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.release_tag || github.ref_name }}"
+          VER="${TAG#v}"
+          ASSET="Top30-${VER}-macos-${{ matrix.label }}.zip"
+          ditto -c -k --sequesterRsrc --keepParent dist/Top30.app "$ASSET"
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+          ls -lh "$ASSET"
+
+      - name: Upload .app to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ inputs.release_tag || github.ref_name }}"
+          gh release upload "$TAG" "$ASSET" --clobber

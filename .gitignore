@@ -31,6 +31,8 @@ MANIFEST
 #   before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+!packaging/windows/*.spec
+!packaging/macos/*.spec
 
 # Installer logs
 pip-log.txt
@@ -216,3 +218,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Flatpak: build-uitvoer en meegebundelde (grote) binaries
+.flatpak-builder/
+flatpak/binaries/
+.bundle/

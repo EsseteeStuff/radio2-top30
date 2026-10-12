@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>be.serge.Radio2Top30</id>
+  <name>Top30</name>
+  <summary>Archive VRT Radio 2 Top 30 hit lists to MP3</summary>
+  <description>
+    <p>Top30 fetches historical VRT Radio 2 Top 30 charts from hitnoteringen.be, searches for each track on YouTube, downloads and converts them to properly tagged MP3 files, and organizes them in your music library.</p>
+    <p>Features:</p>
+    <ul>
+      <li>Scrape hit lists by year range</li>
+      <li>Download videos and convert to MP3</li>
+      <li>Automatic tagging (artist, title, year, genre, album)</li>
+      <li>Rename and organize tracks</li>
+      <li>Resume interrupted operations</li>
+      <li>Modern Qt GUI or CLI mode</li>
+    </ul>
+  </description>
+  <developer id="io.github.EsseteeStuff">
+    <name>EsseteeStuff</name>
+  </developer>
+  <launchable type="desktop-id">be.serge.Radio2Top30.desktop</launchable>
+  <url type="homepage">https://github.com/EsseteeStuff/radio2-top30</url>
+  <url type="bugtracker">https://github.com/EsseteeStuff/radio2-top30/issues</url>
+  <categories>
+    <category>Audio</category>
+    <category>Utility</category>
+  </categories>
+  <releases>
+    <release version="1.0" date="2026-10-10">
+      <description>
+        <p>Initial Flatpak release</p>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1" />
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+</component>
