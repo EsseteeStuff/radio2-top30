@@ -182,7 +182,7 @@ Je zou aan het einde iets moeten zien als:
 
 ```
 ============================================================
-95/95 geslaagd
+195/195 geslaagd
 ```
 
 Staan er punten tussen met een kruis, dan staat er achter elke regel waarom.
@@ -421,17 +421,30 @@ Bij elk pad staat een knop **Bladeren** om het snel in te kiezen.
 
 ### Taak
 
-De kaart **TAAK** bepaalt wat er gebeurt. Er is één samenvattende taak en vijf
-losse stappen.
+De kaart **TAAK** bepaalt wat er gebeurt. Er zijn drie losse taken
+(radiobuttons) en drie stappen die je vrij mag combineren (checkboxes).
+
+**Losse taken** — je kiest er één:
 
 | Taak | Wat er gebeurt |
 | --- | --- |
 | **Alles doen** *(standaard)* | De vier stappen hieronder, in volgorde. |
-| **Alleen scrapen** | De hitlijsten van hitnoteringen.be ophalen naar `hits_BEGINJAAR_ENDJAAR.txt`. |
-| **Alleen downloaden** | De nummers uit het hits-bestand van de gekozen jaren op YouTube opzoeken en als mp4 opslaan. |
-| **Alleen converteren** | Alle mp4's uit de mp4-map omzetten naar mp3. |
-| **Alleen verplaatsen** | De mp3's uit de mp3-map naar je muziekmap zetten, met nummering. |
+| **Alleen scrapen** | Alleen de hitlijsten van hitnoteringen.be ophalen naar `hits_BEGINJAAR_ENDJAAR.txt`. |
 | **Prefixen herstellen** | Je muziekmap helemaal opnieuw nummeren: namen herstellen met de hitlijst, alle bestaande nummering eraf, dan schudden, dan `0001-` tot en met het aantal. |
+
+**Combineerbare stappen** — vink aan wat je wilt, in deze vaste volgorde:
+
+| Stap | Wat er gebeurt |
+| --- | --- |
+| **Downloaden** | De nummers uit het hits-bestand van de gekozen jaren op YouTube opzoeken en als mp4 opslaan. |
+| **Converteren** | Alle mp4's uit de mp4-map omzetten naar mp3. |
+| **Verplaatsen** | De mp3's uit de mp3-map naar je muziekmap zetten, met nummering. |
+
+Je kunt dus bijvoorbeeld alleen *Downloaden* aanvinken, of *Downloaden* +
+*Converteren* (de mp4's blijven dan staan), of alle drie. Zodra je een stap
+aanvinkt vervalt de gekozen losse taak, en omgekeerd: kies je weer *Alles
+doen*, dan gaan de vinkjes uit. Onder de taken staat in één regel wat er op dat
+moment op de planning staat.
 
 **Waarom de losse stappen?** Ze zijn er voor als het programma onderbroken is
 of als er iets misging. Kies dan dezelfde stappen opnieuw, alleen begin je bij
@@ -441,9 +454,9 @@ alleen het werk dat nog ontbreekt — zie
 
 De losse stappen werken ook los van elkaar:
 
-* **Alleen downloaden** heeft het hits-bestand van de gekozen jaren nodig. Dat
+* **Downloaden** heeft het hits-bestand van de gekozen jaren nodig. Dat
   moet er al zijn; anders zegt het programma dat. Begin dan bij *Alleen scrapen*.
-* **Alleen converteren** en **Alleen verplaatsen** werken op wat er op dat
+* **Converteren** en **Verplaatsen** werken op wat er op dat
   moment in de mappen ligt, en hebben geen jaartallen nodig.
 
 ### Opties
@@ -525,7 +538,9 @@ De **CONSOLE** laat zien wat het programma doet. Ze is niet leeg te maken
 terwijl er gewerkt wordt; dat kan tussentijds zichtbaar werk overschrijven.
 
 * **Fouten en waarschuwingen** staan in het rood of geel en worden nooit
-  verborgen.
+  verborgen. Alleen de bekende, onschadelijke yt-dlp-melding over YouTube's
+  *SABR-only streaming experiment* (waarbij de download gewoon lukt) wordt
+  overgeslagen, omdat ze anders voor een fout wordt aangezien.
 * Voortgang staat in het groen, één regel per gedownload nummer.
 * De teller naast **CONSOLE** toont wat er op schijf staat: hoeveel hits, mp4's,
   mp3's en bestanden in de muziekmap.
@@ -1084,7 +1099,7 @@ mappen en raakt je muziek nooit aan.
 ## Zelf testen
 
 ```bash
-.venv/bin/python selftest.py             # kern + venster, 107 punten
+.venv/bin/python selftest.py             # kern + venster, 195 punten
 .venv/bin/python selftest.py --live      # ook echt één pagina ophalen
 .venv/bin/python selftest.py --scherm    # maakt scherm_donker.png / scherm_licht.png
 ```

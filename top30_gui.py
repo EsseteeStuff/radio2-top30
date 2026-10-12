@@ -39,9 +39,10 @@ from PySide6.QtGui import (
     QSyntaxHighlighter, QTextCharFormat,
 )
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout,
-    QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
-    QPushButton, QRadioButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame,
+    QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
+    QProgressBar, QPushButton, QRadioButton, QScrollArea, QSpinBox, QVBoxLayout,
+    QWidget,
 )
 
 import top30_core as kern
@@ -62,13 +63,21 @@ TAKEN = [
     "alles", "scrape", "download", "convert", "verplaats", "fixprefix",
 ]
 
+# De stappen die je vrij mag combineren. Alles en Alleen scrapen zijn
+# enkelvoudige keuzes (radiobutton); Prefixen herstellen is de losse taak
+# helemaal onderaan die ook een radiobutton blijft.
+CHECK_TAKEN = ["download", "convert", "verplaats"]
+
+# De vier stappen van de volledige rit, in de volgorde waarin ze horen.
+ALLE_STAPPEN = ["scrape", "download", "convert", "verplaats"]
+
 # Korte naam plus een uitleg die eronder staat, zodat de zijbalk smal blijft.
 TAAL = {
     "alles": ("Alles doen", "Scrapen, downloaden, converteren en verplaatsen."),
     "scrape": ("Alleen scrapen", "De hitlijsten van hitnoteringen.be ophalen."),
-    "download": ("Alleen downloaden", "YouTube → mp4, uit het hits-bestand van de gekozen jaren."),
-    "convert": ("Alleen converteren", "Alle mp4's uit de mp4-map omzetten naar mp3."),
-    "verplaats": ("Alleen verplaatsen", "De mp3's uit de mp3-map naar je muziekmap zetten."),
+    "download": ("Downloaden", "YouTube → mp4, uit het hits-bestand van de gekozen jaren."),
+    "convert": ("Converteren", "Alle mp4's uit de mp4-map omzetten naar mp3."),
+    "verplaats": ("Verplaatsen", "De mp3's uit de mp3-map naar je muziekmap zetten."),
     "fixprefix": ("Prefixen herstellen", "Namen herstellen met de hitlijst, alle nummering eraf, lijst schudden, en oplopend nummeren vanaf 0001."),
 }
 
@@ -421,31 +430,56 @@ class Console(QPlainTextEdit):
 # Voortgang
 # --------------------------------------------------------------------------
 
-GEWICHTEN = {
-    "alles": {"scrapen": 15, "downloaden": 65, "converteren": 12, "verplaatsen": 8},
-    "scrape": {"scrapen": 100},
-    "download": {"downloaden": 100},
-    "convert": {"converteren": 100},
-    "verplaats": {"verplaatsen": 70, "hernoemen": 30},
-    "fixprefix": {"verplaatsen": 100},
-}
-
-# De eerste fase van elke taak; bepaalt wat de voortgangsbalk doet.
-STAP_VOOR_STAP = {
-    "alles": "scrapen",
+# De fase die bij elke stap hoort. De kern meldt zijn voortgang onder die
+# naam, en de GUI zet de naam om naar iets leesbaars.
+STAP_FASE = {
     "scrape": "scrapen",
     "download": "downloaden",
     "convert": "converteren",
     "verplaats": "verplaatsen",
-    "fixprefix": "verplaatsen",
+    "fixprefix": "hernoemen",
 }
+
+# Hoe zwaar elke fase meeweegt als er meerdere stappen in één run zitten.
+# Het downloaden duurt veruit het langst, dus dat krijgt het grootste gewicht.
+FASE_GEWICHT = {"scrapen": 15, "downloaden": 65, "converteren": 12, "verplaatsen": 8}
+
+# Een run met één stap vult de balk in zijn geheel.
+EEN_STAP_GEWICHTEN = {
+    "scrape": {"scrapen": 100},
+    "download": {"downloaden": 100},
+    "convert": {"converteren": 100},
+    "verplaats": {"verplaatsen": 70, "hernoemen": 30},
+    "fixprefix": {"hernoemen": 100},
+}
+
+
+def gewichten_voor(stappen: list[str], hernoemen: bool = True) -> dict[str, float]:
+    """Bepaal hoe zwaar elke fase meetelt op de voortgangsbalk.
+
+    Eén stap vult de balk helemaal; bij een combinatie verdelen de gekozen
+    stappen de balk naar hun gebruikelijke gewicht. Het schudden en nummeren
+    hoort bij verplaatsen en krijgt daarbinnen zijn eigen aandeel.
+    """
+    if len(stappen) == 1:
+        return dict(EEN_STAP_GEWICHTEN.get(stappen[0], {"verplaatsen": 100}))
+    gewichten: dict[str, float] = {}
+    for stap in stappen:
+        fase = STAP_FASE.get(stap)
+        if fase in FASE_GEWICHT:
+            gewichten[fase] = FASE_GEWICHT[fase]
+    if "verplaats" in stappen and hernoemen and "verplaatsen" in gewichten:
+        basis = gewichten["verplaatsen"]
+        gewichten["verplaatsen"] = basis * 0.7
+        gewichten["hernoemen"] = basis * 0.3
+    return gewichten
 
 
 class VoortgangsBoek:
     """Zet de voortgang van elke fase om naar één Overall-percentage."""
 
-    def __init__(self, taak: str):
-        self.gewichten = GEWICHTEN.get(taak, {"scrapen": 100})
+    def __init__(self, gewichten: dict[str, float]):
+        self.gewichten = dict(gewichten)
         self.klaar: dict[str, float] = {fase: 0.0 for fase in self.gewichten}
         self.deel: dict[str, float] = {fase: 0.0 for fase in self.gewichten}
 
@@ -484,9 +518,9 @@ class TaakThread(QThread):
     klaar = Signal(str, bool)                # bericht, geslaagd?
     samenvatting = Signal(dict)
 
-    def __init__(self, taak: str, ctx: kern.Context, opties: dict, parent=None):
+    def __init__(self, stappen: list[str], ctx: kern.Context, opties: dict, parent=None):
         super().__init__(parent)
-        self.taak = taak
+        self.stappen = list(stappen)
         self.ctx = ctx
         self.opties = opties
         self.onderbroken = False
@@ -505,7 +539,9 @@ class TaakThread(QThread):
 
     def run(self) -> None:
         ctx = self.ctx
-        self._huidige_fase = STAP_VOOR_STAP.get(self.taak, "scrapen")
+        self._huidige_fase = STAP_FASE.get(
+            self.stappen[0] if self.stappen else "", "scrapen"
+        )
         ctx.log = self.log.emit
         ctx.voortgang = self.voortgang.emit
         ctx.deelvoortgang = (
@@ -542,32 +578,43 @@ class TaakThread(QThread):
     # ------------------------------------------------------------- stappen
     def _uitvoeren(self) -> None:
         ctx = self.ctx
-        begin = int(self.opties["begin"])
-        eind = int(self.opties["eind"])
-        taak = self.taak
-        self._huidige_fase = STAP_VOOR_STAP[taak]
+        opties = self.opties
+        begin = int(opties["begin"])
+        eind = int(opties["eind"])
 
-        if taak == "scrape":
-            hits = kern.scrape(ctx, begin, eind, overschrijven=self.opties["overschrijven"])
-            ctx.log(f"Gereed: {len(hits)} nummers uit de lijst.")
-        elif taak == "download":
-            hits = kern.laad_hits(ctx, begin, eind)
-            kern.download(ctx, hits, sla_bestaande_over=self.opties["sla_over"])
-        elif taak == "convert":
-            kern.convert(ctx, verwijder_mp4=self.opties["verwijder_mp4"])
-        elif taak == "verplaats":
-            kern.verplaats(ctx, hernoem=self.opties["hernoemen"])
-        elif taak == "fixprefix":
-            kern.fixprefix(ctx)
-        elif taak == "alles":
+        # De volledige rit krijgt de vertrouwde kopjes uit de kern.
+        if self.stappen == list(ALLE_STAPPEN):
+            self._huidige_fase = "scrapen"
             kern.voer_alles(
                 ctx, begin, eind,
-                verwijder_mp4=self.opties["verwijder_mp4"],
-                hernoem=self.opties["hernoemen"],
-                sla_bestaande_over=self.opties["sla_over"],
+                verwijder_mp4=opties["verwijder_mp4"],
+                hernoem=opties["hernoemen"],
+                sla_bestaande_over=opties["sla_over"],
             )
-        else:
-            raise kern.Fout(f"Onbekende taak: {taak}")
+            return
+
+        meerdere = len(self.stappen) > 1
+        for nummer, stap in enumerate(self.stappen, 1):
+            self._huidige_fase = STAP_FASE[stap]
+            if meerdere:
+                ctx.log("")
+                ctx.log("=" * 62)
+                ctx.log(f"{nummer}/{len(self.stappen)}  {TAAL[stap][0]}")
+                ctx.log("=" * 62)
+            if stap == "scrape":
+                hits = kern.scrape(ctx, begin, eind, overschrijven=opties["overschrijven"])
+                ctx.log(f"Gereed: {len(hits)} nummers uit de lijst.")
+            elif stap == "download":
+                hits = kern.laad_hits(ctx, begin, eind)
+                kern.download(ctx, hits, sla_bestaande_over=opties["sla_over"])
+            elif stap == "convert":
+                kern.convert(ctx, verwijder_mp4=opties["verwijder_mp4"])
+            elif stap == "verplaats":
+                kern.verplaats(ctx, hernoem=opties["hernoemen"])
+            elif stap == "fixprefix":
+                kern.fixprefix(ctx)
+            else:
+                raise kern.Fout(f"Onbekende stap: {stap}")
 
 
 # --------------------------------------------------------------------------
@@ -785,21 +832,34 @@ class Venster(QMainWindow):
         # --- taakkeuze
         kaart_taak, layout_taak = self._kaart("TAAK")
         self.radio_knoppen: dict[str, QRadioButton] = {}
+        self.stap_knoppen: dict[str, QCheckBox] = {}
+        # De radiobuttons zitten in een eigen groep, zodat we ze allemaal los
+        # kunnen zetten zodra je een van de combineerbare stappen aanvinkt.
+        self._radio_groep = QButtonGroup(self)
+        self._radio_groep.setExclusive(True)
         for taak in TAKEN:
             naam, uitleg = TAAL[taak]
-            radio = QRadioButton(naam)
-            radio.setToolTip(uitleg)
-            if taak == "alles":
-                radio.setChecked(True)
-            radio.toggled.connect(self._taak_gewijzigd)
-            layout_taak.addWidget(radio)
-            self.radio_knoppen[taak] = radio
+            if taak in CHECK_TAKEN:
+                vak = QCheckBox(naam)
+                vak.setToolTip(uitleg)
+                vak.toggled.connect(self._stap_gewijzigd)
+                layout_taak.addWidget(vak)
+                self.stap_knoppen[taak] = vak
+            else:
+                radio = QRadioButton(naam)
+                radio.setToolTip(uitleg)
+                if taak == "alles":
+                    radio.setChecked(True)
+                radio.toggled.connect(self._taak_gewijzigd)
+                layout_taak.addWidget(radio)
+                self.radio_knoppen[taak] = radio
+                self._radio_groep.addButton(radio)
         layout_taak.addSpacing(2)
         self.label_taak_info = QLabel("")
         self.label_taak_info.setObjectName("kop_sub")
         self.label_taak_info.setWordWrap(True)
         layout_taak.addWidget(self.label_taak_info)
-        self.label_taak_info.setText(TAAL["alles"][1])
+        self.label_taak_info.setText(self._taak_uitleg(self._gekozen_stappen()))
         kolom.addWidget(kaart_taak)
 
         # --- opties
@@ -1057,20 +1117,63 @@ class Venster(QMainWindow):
         except OSError as fout:
             self.log(f"⚠ Instellingen konden niet bewaard worden: {fout}")
 
-    def _taak_gewijzigd(self) -> None:
-        taak = self._huidige_taak()
-        self._voortgang_boek = VoortgangsBoek(taak)
-        self.label_taak_info.setText(TAAL[taak][1])
+    def _stap_gewijzigd(self) -> None:
+        """Een combineerbare stap aan of uit: de losse taken komen te vervallen."""
+        if any(vak.isChecked() for vak in self.stap_knoppen.values()):
+            self._radio_groep.setExclusive(False)
+            for radio in self.radio_knoppen.values():
+                radio.blockSignals(True)
+                radio.setChecked(False)
+                radio.blockSignals(False)
+            self._radio_groep.setExclusive(True)
+        self._taak_gewijzigd()
 
-    def _huidige_taak(self) -> str:
+    def _taak_gewijzigd(self) -> None:
+        # Zodra een losse taak (alles, alleen scrapen, prefixen herstellen)
+        # wordt gekozen, vervallen de los aangevinkte stappen.
+        if any(radio.isChecked() for radio in self.radio_knoppen.values()):
+            for vak in self.stap_knoppen.values():
+                if vak.isChecked():
+                    vak.blockSignals(True)
+                    vak.setChecked(False)
+                    vak.blockSignals(False)
+        self.label_taak_info.setText(self._taak_uitleg(self._gekozen_stappen()))
+
+    def _gekozen_stappen(self) -> list[str]:
+        """Welke stappen er nu op de planning staan, in de juiste volgorde."""
         for taak, radio in self.radio_knoppen.items():
             if radio.isChecked():
-                return taak
-        return "alles"
+                return list(ALLE_STAPPEN) if taak == "alles" else [taak]
+        return [taak for taak in CHECK_TAKEN if self.stap_knoppen[taak].isChecked()]
+
+    def _taak_uitleg(self, stappen: list[str]) -> str:
+        if not stappen:
+            return "Kies een taak of vink minstens één stap aan."
+        if stappen == list(ALLE_STAPPEN):
+            return TAAL["alles"][1]
+        if len(stappen) == 1:
+            return TAAL[stappen[0]][1]
+        namen = [TAAL[stap][0].replace("Alleen ", "").lower() for stap in stappen]
+        return "Achter elkaar: " + ", ".join(namen[:-1]) + " en " + namen[-1] + "."
+
+    def _huidige_taak(self) -> str:
+        stappen = self._gekozen_stappen()
+        if stappen == list(ALLE_STAPPEN):
+            return "alles"
+        if len(stappen) == 1:
+            return stappen[0]
+        return "+".join(stappen)
 
     # ---------------------------------------------------------------- start
     def _start(self) -> None:
         if self.thread and self.thread.isRunning():
+            return
+        stappen = self._gekozen_stappen()
+        if not stappen:
+            QMessageBox.warning(
+                self, "Taak",
+                "Kies een taak of vink minstens één stap aan.",
+            )
             return
         self._check_jaren()
         begin = self.spin_begin.value()
@@ -1097,8 +1200,6 @@ class Venster(QMainWindow):
 
         self._werk, self._muziek = werk, muziek
         self._bewaar()
-        taak = self._huidige_taak()
-
         ctx = kern.Context(
             paden=paden,
             cookie_browser=self.combo_cookie.currentText(),
@@ -1112,19 +1213,21 @@ class Venster(QMainWindow):
             "sla_over": self.cb_sla_over.isChecked(),
         }
 
-        self._voortgang_boek = VoortgangsBoek(taak)
+        self._voortgang_boek = VoortgangsBoek(
+            gewichten_voor(stappen, opties["hernoemen"])
+        )
         self.balk.setValue(0)
         self._zet_draaiend(True)
         self.console.appendPlainText("")
 
         self.log(f"{'─' * 58}")
-        self.log(f"▶ {TAAL[taak][0]} — {TAAL[taak][1]}")
+        self.log(f"▶ {self._taak_uitleg(stappen)}")
         self.log(f"  Periode: {begin}–{eind}")
         self.log(f"  Werkmap: {werk}")
         self.log(f"  Muziekmap: {muziek}")
         self.log("─" * 58)
 
-        self.thread = TaakThread(taak, ctx, opties, self)
+        self.thread = TaakThread(stappen, ctx, opties, self)
         self.thread.log.connect(self.log)
         self.thread.voortgang.connect(self._op_voortgang)
         self.thread.deelvoortgang.connect(self._op_deelvoortgang)
@@ -1147,18 +1250,22 @@ class Venster(QMainWindow):
         for widget in (
             self.veld_werk, self.veld_muziek, self.spin_begin, self.spin_eind,
             self.cb_verwijder, self.cb_hernoemen, self.cb_overschrijven,
-            self.combo_cookie,
+            self.cb_sla_over, self.combo_cookie,
         ):
             widget.setEnabled(not draait)
         for radio in self.radio_knoppen.values():
             radio.setEnabled(not draait)
+        for vak in self.stap_knoppen.values():
+            vak.setEnabled(not draait)
         if not draait:
             self.status_label.setText("Gereed")
 
     @Slot(str, int, int, str)
     def _op_voortgang(self, fase: str, index: int, totaal: int, label: str) -> None:
         if self._voortgang_boek is None:
-            self._voortgang_boek = VoortgangsBoek(self._huidige_taak())
+            self._voortgang_boek = VoortgangsBoek(
+                gewichten_voor(self._gekozen_stappen(), self.cb_hernoemen.isChecked())
+            )
         self._voortgang_boek.zet(fase, index, totaal)
         self.balk.setValue(int(self._voortgang_boek.totaal()))
         naam = FASEN.get(fase, fase)
@@ -1177,7 +1284,7 @@ class Venster(QMainWindow):
 
     @Slot(str, bool)
     def _op_klaar(self, bericht: str, geslaagd: bool) -> None:
-        self._voortgang_label.setText(bericht)
+        self.voortgang_label.setText(bericht)
         self.status_label.setText(bericht)
         if geslaagd:
             self.balk.setValue(100)

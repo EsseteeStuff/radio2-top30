@@ -1019,6 +1019,17 @@ def bewaar_manifest(ctx: Context, items: list[dict]) -> None:
 # Zoekvoortgang binnen de video die bezig is (voor de voortgangsbalk).
 _voortgang_meter = re.compile(r"\[download\]\s+(\d{1,3}(?:[.,]\d+)?)%")
 
+# yt-dlp waarschuwt soms dat het een deel van de formats van de
+# 'web_embedded'-client overslaat omdat YouTube het SABR-only experiment aan
+# heeft staan. De download lukt gewoon en de melding is dus ruis. Regels met
+# deze kenmerkende tekst worden daarom niet naar de console doorgegeven; echte
+# waarschuwingen en fouten wel.
+_SABR_RUIS = (
+    "formats have been skipped as they are missing a URL",
+    "SABR-only streaming experiment",
+    "issues/12482",
+)
+
 
 def _cookie_opties(ctx: Context) -> list[str]:
     """Welke cookie-bron gebruikt yt-dlp?"""
@@ -1133,6 +1144,8 @@ def _yt_dlp_luister(ctx: Context, laatste: list[str]):
             return
         schoon = regel.strip()
         if schoon.startswith(("ERROR", "WARNING")):
+            if any(stuk in schoon for stuk in _SABR_RUIS):
+                return
             ctx.log("  " + schoon)
     return luister
 

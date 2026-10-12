@@ -587,6 +587,25 @@ def test_kern() -> None:
     code, _ = kern.draai_proces(["sh", "-c", "exit 3"], ctx2)
     check("niet-nul exitcode wordt doorgegeven", code == 3, str(code))
 
+    # De yt-dlp-console: echte waarschuwingen en fouten blijven staan, maar de
+    # bekende (onschadelijke) SABR-melding van YouTube wordt verborgen.
+    getoond: list[str] = []
+    luister = kern._yt_dlp_luister(
+        kern.Context(paden=paden, log=getoond.append), [])
+    luister("WARNING: [youtube] vUrE1oI10JE: Some web_embedded client https "
+            "formats have been skipped as they are missing a URL. YouTube may "
+            "have enabled the SABR-only streaming experiment for your account. "
+            "See  https://github.com/yt-dlp/yt-dlp/issues/12482  for more details")
+    luister("WARNING: [youtube] echte waarschuwing")
+    luister("ERROR: [youtube] echte fout")
+    check("SABR-melding wordt niet getoond",
+          not any("SABR" in r or "web_embedded" in r for r in getoond),
+          str(getoond))
+    check("echte waarschuwingen blijven zichtbaar",
+          any("echte waarschuwing" in r for r in getoond), str(getoond))
+    check("echte fouten blijven zichtbaar",
+          any("echte fout" in r for r in getoond), str(getoond))
+
     shutil.rmtree(werk, ignore_errors=True)
 
 
@@ -671,7 +690,10 @@ def test_gui(maak_scherm: bool = False) -> None:
     check("venster opent", venster.isVisible())
     check("werkmap ingevuld", bool(venster.veld_werk.text()))
     check("muziekmap ingevuld", bool(venster.veld_muziek.text()))
-    check("zes taken in het menu", len(venster.radio_knoppen) == 6)
+    check("drie losse taken als radiobutton", len(venster.radio_knoppen) == 3,
+          str(sorted(venster.radio_knoppen)))
+    check("drie stappen als checkbox", len(venster.stap_knoppen) == 3,
+          str(sorted(venster.stap_knoppen)))
     check("standaardtaak is 'alles'", venster._huidige_taak() == "alles")
     check("startknop aan", venster.knop_start.isEnabled())
     check("stopknop uit", not venster.knop_stop.isEnabled())
@@ -866,11 +888,38 @@ def test_gui(maak_scherm: bool = False) -> None:
           == (1980, 1985))
 
     # Voortgangsbalk
-    boek = top30_gui.VoortgangsBoek("alles")
+    boek = top30_gui.VoortgangsBoek(
+        top30_gui.gewichten_voor(["scrape", "download", "convert", "verplaats"]))
     boek.zet("scrapen", 5, 10)
     check("voortgangsbalk rekent", 7 <= boek.totaal() <= 8, f"{boek.totaal():.1f}%")
     boek.zet("downloaden", 10, 10)
     check("downloaden weegt zwaarder", boek.totaal() > 50, f"{boek.totaal():.1f}%")
+
+    # De combineerbare stappen: een combinatie levert dezelfde gewichten als
+    # 'alles' min de stappen die je niet aanvinkt.
+    alleen_convert = top30_gui.gewichten_voor(["convert"])
+    check("één stap vult de hele voortgangsbalk",
+          sum(alleen_convert.values()) == 100 and alleen_convert == {"converteren": 100},
+          str(alleen_convert))
+    combi = top30_gui.gewichten_voor(["download", "convert", "verplaats"])
+    check("combinatie laat scraper weg uit de gewichten",
+          "scrapen" not in combi and set(combi) == {"downloaden", "converteren",
+                                                    "verplaatsen", "hernoemen"},
+          str(combi))
+
+    # _op_klaar wordt door het echte venster aan het klaar-signaal gehangen.
+    # De zelftest bouwde de draad eerder handmatig en sloeg die verbinding over;
+    # een verkeerde attribuutnaam bleef daardoor onopgemerkt.
+    try:
+        venster._op_klaar("Klaar.", True)
+        check("_op_klaar werkt en zet de labels",
+              venster.voortgang_label.text() == "Klaar."
+              and venster.status_label.text() == "Gereed"
+              and venster.balk.value() == 100,
+              f"{venster.voortgang_label.text()!r} / "
+              f"{venster.status_label.text()!r} / {venster.balk.value()}")
+    except Exception as fout:
+        check("_op_klaar werkt en zet de labels", False, str(fout))
 
     # Een taak echt laten draaien in de GUI-draad: verplaatsen
     werk = Path(tempfile.mkdtemp(prefix="top30gui-"))
@@ -880,8 +929,10 @@ def test_gui(maak_scherm: bool = False) -> None:
     venster.veld_werk.setText(str(werk))
     venster.veld_muziek.setText(str(paden.muziek))
     venster._na_wijziging()
-    venster.radio_knoppen["verplaats"].setChecked(True)
+    venster.stap_knoppen["verplaats"].setChecked(True)
     check("taak wisselen werkt", venster._huidige_taak() == "verplaats")
+    check("losse taak vervalt bij het aanvinken van een stap",
+          not any(r.isChecked() for r in venster.radio_knoppen.values()))
 
     uitkomst: list = []
 
@@ -889,7 +940,7 @@ def test_gui(maak_scherm: bool = False) -> None:
         uitkomst.append((bericht, geslaagd))
 
     venster.thread = top30_gui.TaakThread(
-        "verplaats",
+        ["verplaats"],
         kern.Context(paden=paden, log=venster.log),
         {"begin": 1980, "eind": 1985, "verwijder_mp4": False,
          "hernoemen": True, "overschrijven": False},
@@ -918,11 +969,11 @@ def test_gui(maak_scherm: bool = False) -> None:
     venster.veld_werk.setText(str(werk2))
     venster.veld_muziek.setText(str(paden2.muziek))
     venster._na_wijziging()
-    venster.radio_knoppen["convert"].setChecked(True)
+    venster.stap_knoppen["convert"].setChecked(True)
 
     stop_uitkomst: list = []
     thread = top30_gui.TaakThread(
-        "convert",
+        ["convert"],
         kern.Context(paden=paden2, log=venster.log),
         {"begin": 1980, "eind": 1985, "verwijder_mp4": False,
          "hernoemen": True, "overschrijven": False},
