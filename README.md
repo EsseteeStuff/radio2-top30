@@ -183,7 +183,7 @@ Je zou aan het einde iets moeten zien als:
 
 ```
 ============================================================
-202/202 geslaagd
+212/212 geslaagd
 ```
 
 Staan er punten tussen met een kruis, dan staat er achter elke regel waarom.
@@ -1134,7 +1134,7 @@ mappen en raakt je muziek nooit aan.
 ## Zelf testen
 
 ```bash
-.venv/bin/python selftest.py             # kern + venster, 202 punten
+.venv/bin/python selftest.py             # kern + vensters, 212 punten
 .venv/bin/python selftest.py --live      # ook echt één pagina ophalen
 .venv/bin/python selftest.py --scherm    # maakt scherm_donker.png / scherm_licht.png
 ```
@@ -1160,6 +1160,7 @@ website meewerken.
 | `selftest.py` | De zelftest. |
 | `normaliseren.py` | Hulpje: de luidheid van m4a/aac (en mp3 met `--mp3`) gelijktrekken met ffmpeg loudnorm. Droge proef, tenzij je `--ja` meegeeft; `--gui` opent het venster. |
 | `normaliseren_gui.py` | Het venster bij `normaliseren.py --gui`: kies een map, stel het doelniveau in, wat eerst een droge proef en doe het daarna echt. Zelfde stijl als de Top30-app, met voortgangsbalk, console en Stoppen. |
+| `muziekspeler.py` | Een "Winamp-light" in de Top30-stijl: een map met muziek openen (of bestanden slepen), afspelen met voortgang, volume, willekeurig en herhalen. `.venv/bin/python muziekspeler.py`. |
 | `muziekmap_opschonen.py` | Hulpje: dubbele nummers uit de muziekmap halen en opnieuw nummeren. Droge proef, tenzij je `--ja` meegeeft. |
 | `maak-release.sh` | Een release maken en publiceren: git-tag aanmaken en pushen, de release aanmaken en de drie build-workflows starten. `--oefen` voor een droge proef. |
 | `requirements.txt` | De Python-pakketten. |
