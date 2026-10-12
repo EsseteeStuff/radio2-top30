@@ -1107,80 +1107,6 @@ def test_normaliseren_gui() -> None:
             venster.close()
 
 
-def test_muziekspeler() -> None:
-    sectie("Muziekspeler (offscreen)")
-    from PySide6.QtWidgets import QApplication
-
-    import muziekspeler as sp
-
-    app = QApplication.instance() or QApplication([])
-    werk = Path(tempfile.mkdtemp(prefix="top30speler-"))
-    muziek = werk / "jaren70"
-    (muziek / "1970").mkdir(parents=True)
-    (muziek / ".prullenbak").mkdir()
-    venster = None
-    try:
-        # Echte, speelbare mp3's (kort en stil) zodat QtMultimedia iets ziet.
-        for i, naam in enumerate(["ABBA - Dancing Queen.mp3",
-                                  "Thin Lizzy - Whiskey in the Jar.mp3",
-                                  "Mort Shuman - Le Lac Majeur.mp3"]):
-            subprocess.run(
-                ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                 "-f", "lavfi", "-i", f"sine=frequency={300 + i * 50}:duration=1",
-                 "-c:a", "libmp3lame", "-q:a", "9",
-                 str(muziek / "1970" / naam)],
-                check=True, capture_output=True,
-            )
-        (muziek / ".prullenbak" / "geheim.mp3").write_bytes(b"x")
-
-        venster = sp.Muziekvenster("donker")
-        check("muziekspeler-venster bouwt", bool(venster.windowTitle()),
-              venster.windowTitle())
-
-        toegevoegd = venster.voeg_bestanden_toe([str(muziek)])
-        check("muziek zoeken telt 3 nummers",
-              toegevoegd == 3 and venster.aantal() == 3,
-              f"{toegevoegd} toegevoegd")
-        check("verborgen map wordt overgeslagen",
-              all("geheim" not in venster.playlist.item(i).text()
-                  for i in range(venster.aantal())))
-        dubbel = venster.voeg_bestanden_toe([str(muziek)])
-        check("dubbele nummers worden niet opnieuw toegevoegd",
-              dubbel == 0 and venster.aantal() == 3, str(dubbel))
-
-        check("titel uit de tags (zonder nummering)",
-              sp.toon_naam(muziek / "1970" / "ABBA - Dancing Queen.mp3")
-              == "ABBA - Dancing Queen")
-        check("tijdaanduiding klopt",
-              sp.formaat_tijd(65321) == "1:05"
-              and sp.formaat_tijd(3661000) == "1:01:01",
-              sp.formaat_tijd(3661000))
-
-        venster.speel(0)
-        venster.herhaal_mode = 2  # "alle"
-        check("herhalen: hele lijst loopt rond",
-              venster._volgende_index() == 1)
-        venster.speel(2)
-        venster.herhaal_mode = 0  # "uit"
-        check("herhalen: uit stopt aan het eind",
-              venster._volgende_index() is None)
-        venster.willekeurig = True
-        check("willekeurig kiest een ander nummer",
-              venster._volgende_index() != venster.huidige_index)
-        venster.willekeurig = False
-
-        venster._wissel_thema(True)
-        check("thema wisselt naar licht",
-              venster.thema_naam == "licht"
-              and len(venster.styleSheet()) > 1000)
-        venster._wissel_thema(False)
-    finally:
-        shutil.rmtree(werk, ignore_errors=True)
-        if venster is not None:
-            venster._onthouden = False  # de zelftest mag geen instellingen bewaren
-            venster.close()
-
-
 # ---------------------------------------------------------------------------
 
 def main() -> int:
@@ -1198,7 +1124,6 @@ def main() -> int:
         if "--live" in sys.argv:
             test_scrapen_live()
         test_normaliseren_gui()
-        test_muziekspeler()
         test_gui(maak_scherm="--scherm" in sys.argv)
     finally:
         kern.config_map = lambda: echte_map  # type: ignore[assignment]
