@@ -4,12 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release-tag waaraan de .exe wordt toegevoegd (bijv. v1.0)"
+        description: >-
+          Release-tag waaraan de .exe wordt toegevoegd (bijv. v1.0). De
+          release moet al bestaan; maak hem eerst aan op GitHub.
         required: true
         default: "v1.0"
-  push:
-    tags:
-      - "v*"
 
 permissions:
   contents: write
