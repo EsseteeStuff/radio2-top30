@@ -41,6 +41,7 @@ Deze handleiding bestaat uit twee delen:
   * [Sneltoetsen](#sneltoetsen)
   * [Thema](#thema)
 * [Commandoregel](#commandoregel)
+* [Een nieuwe release maken](#een-nieuwe-release-maken)
 * [Bestanden en mappen](#bestanden-en-mappen)
 * [Veelgestelde problemen](#veelgestelde-problemen)
 * [Zelf testen](#zelf-testen)
@@ -825,6 +826,40 @@ gaat verder.
 
 ---
 
+## Een nieuwe release maken
+
+De gebouwde pakketten (Windows `.exe`, macOS `.app`, Linux `.tar.gz`/`.deb`/`.rpm`)
+komen op GitHub als release. De build-workflows draaien niet meer vanzelf bij een
+tag-push, dus begin een release bewust. Het script `maak-release.sh` doet het
+helemaal:
+
+```bash
+./maak-release.sh 1.1                  # alles: tag, release en builds
+./maak-release.sh 1.1 --nee-builds      # alleen de tag en de release
+./maak-release.sh 1.1 --oefen           # droge proef: er verandert niets
+./maak-release.sh -h                    # uitleg
+```
+
+Wat het script doet:
+
+1. **Controleert** dat de werkmap schoon is, de tag nog niet bestaat en dat je
+   bij GitHub bent ingelogd (`gh auth login`).
+2. **Maakt en pusht de git-tag** `v1.1`.
+3. **Maakt de release** `v1.1` aan — eerst leeg, met een automatisch
+   changelog-overzicht van de commits.
+4. **Start de drie builds** (Linux, macOS, Windows) op die tag. Elke build
+   uploadt zijn pakketten naar de zojuist aangemaakte release.
+
+Eerst met `--oefen` even tonen wat er gaat gebeuren, daarna zonder. Na afloop
+staan de pakketten op GitHub onder *Releases*.
+
+> De workflows *verzinnen* geen release: er moet een release bestaan voordat ze
+> hun pakketten uploaden. `maak-release.sh` maakt die release eerst aan. Een
+> release overdoen? Verwijder de oude eerst weg (`gh release delete v1.1
+> --cleanup-tag --yes`) en draai het script opnieuw.
+
+---
+
 ## Bestanden en mappen
 
 ```
@@ -1126,6 +1161,7 @@ website meewerken.
 | `normaliseren.py` | Hulpje: de luidheid van m4a/aac (en mp3 met `--mp3`) gelijktrekken met ffmpeg loudnorm. Droge proef, tenzij je `--ja` meegeeft; `--gui` opent het venster. |
 | `normaliseren_gui.py` | Het venster bij `normaliseren.py --gui`: kies een map, stel het doelniveau in, wat eerst een droge proef en doe het daarna echt. Zelfde stijl als de Top30-app, met voortgangsbalk, console en Stoppen. |
 | `muziekmap_opschonen.py` | Hulpje: dubbele nummers uit de muziekmap halen en opnieuw nummeren. Droge proef, tenzij je `--ja` meegeeft. |
+| `maak-release.sh` | Een release maken en publiceren: git-tag aanmaken en pushen, de release aanmaken en de drie build-workflows starten. `--oefen` voor een droge proef. |
 | `requirements.txt` | De Python-pakketten. |
 | `.venv/` | De virtual environment. Aangemaakt bij het installeren; kunt die map gewoon verwijderen en opnieuw aanmaken. |
 
